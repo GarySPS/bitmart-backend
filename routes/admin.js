@@ -1,4 +1,5 @@
 // routes/admin.js
+// routes/admin.js
 const { authenticateToken } = require('../middleware/auth');
 const express = require('express');
 const router = express.Router();
@@ -6,10 +7,6 @@ const pool = require('../db');
 const multer = require('multer');   // <-- ADD
 const fs = require('fs');           // <-- ADD
 const path = require('path');       // <-- ADD
-const { authenticateToken } = require('../middleware/auth');
-const express = require('express');
-const router = express.Router();
-const pool = require('../db');
 
 // --- GET all users (admin panel) ---
 router.get('/users', async (req, res) => {
