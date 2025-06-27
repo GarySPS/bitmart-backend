@@ -226,61 +226,51 @@ router.get('/deposit-addresses', async (req, res) => {
 });
 
 // --- Admin: Add/Update deposit address (with QR image upload) ---
-const multer = require('multer');
-const fs = require('fs');
-const path = require('path');
-
-// Ensure uploads dir exists
-const depositUploadsDir = path.resolve(__dirname, '../../novachain-backend/uploads');
+const depositUploadsDir = path.resolve(__dirname, '../uploads');
 if (!fs.existsSync(depositUploadsDir)) {
   fs.mkdirSync(depositUploadsDir, { recursive: true });
 }
-const storage = multer.diskStorage({
+const depositQrStorage = multer.diskStorage({
   destination: depositUploadsDir,
   filename: (req, file, cb) => {
     const safeCoin = req.body.coin.replace(/[^a-z0-9]/gi, '_');
     cb(null, safeCoin + '_' + Date.now() + path.extname(file.originalname));
   }
 });
-const upload = multer({ storage });
+const depositQrUpload = multer({ storage: depositQrStorage });
 
-// Upsert deposit address for a coin (and QR image)
-router.post('/deposit-addresses', upload.single('qr'), async (req, res) => {
+// POST /api/admin/deposit-addresses
+router.post('/deposit-addresses', depositQrUpload.single('qr'), async (req, res) => {
   const { coin, address } = req.body;
   let qr_url = null;
-
   if (!coin || !address) return res.status(400).json({ error: 'Missing coin or address' });
 
-  // If QR uploaded, set file url (your server serves /uploads)
   if (req.file) {
-  qr_url = `/uploads/${req.file.filename}`; // no deposit_qr in path
-}
+    qr_url = `/uploads/${req.file.filename}`;
+  }
 
   try {
-    // If not uploading QR, preserve previous QR!
-    let updateQr = '';
     let params;
-    if (qr_url) {
-      updateQr = ', qr_url = $3';
+    const hasQr = !!qr_url;
+    if (hasQr) {
       params = [address, coin, qr_url];
     } else {
       params = [address, coin];
     }
-
-    const upsertSql = qr_url
+    const sql = hasQr
       ? `INSERT INTO deposit_addresses (address, coin, qr_url, updated_at)
            VALUES ($1, $2, $3, NOW())
          ON CONFLICT (coin)
            DO UPDATE SET address = $1, qr_url = $3, updated_at = NOW()`
       : `UPDATE deposit_addresses SET address = $1, updated_at = NOW() WHERE coin = $2`;
 
-    await pool.query(upsertSql, params);
-
+    await pool.query(sql, params);
     res.json({ success: true, coin, address, qr_url });
   } catch (err) {
     res.status(500).json({ error: 'DB error: ' + err.message });
   }
 });
+
 
 
 module.exports = router;
