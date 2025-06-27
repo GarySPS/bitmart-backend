@@ -25,9 +25,12 @@ const balanceHistoryRoutes = require('./routes/balanceHistory');
 const app = express();
 
 const allowedOrigins = [
-  'https://novachain-frontend.vercel.app', // your live frontend
-  'http://localhost:3000' // for local dev
+  'https://novachain-frontend.vercel.app', // old Vercel preview (optional, can remove later)
+  'http://localhost:3000',                 // for local dev
+  'https://novachain.pro',                 // your main domain
+  'https://www.novachain.pro'              // www version
 ];
+
 
 app.use(cors({
   origin: allowedOrigins,
