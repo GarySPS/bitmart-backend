@@ -24,7 +24,16 @@ const balanceHistoryRoutes = require('./routes/balanceHistory');
 
 const app = express();
 
-app.use(cors());
+const allowedOrigins = [
+  'https://novachain-frontend.vercel.app', // your live frontend
+  'http://localhost:3000' // for local dev
+];
+
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true,
+}));
+
 app.use(express.json());
 app.use('/api/balance/history', balanceHistoryRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -74,6 +83,10 @@ app.get('/api/deposit-addresses', async (req, res) => {
   }
 });
 
+// Catch-all for unknown API routes
+app.use((req, res) => {
+  res.status(404).json({ error: 'API route not found' });
+});
 
 // --------- START SERVER ---------
 const PORT = process.env.PORT || 5000;
