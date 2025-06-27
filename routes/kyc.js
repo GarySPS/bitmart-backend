@@ -1,68 +1,83 @@
-// routes/kyc.js
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
+const multer = require('multer');
+const fs = require('fs');
+const { authenticateToken } = require('../middleware/auth'); // Adjust path if needed
 
-// Submit new KYC request
-router.post('/', async (req, res) => {
-  const { user_id, selfie, id_card } = req.body;
-  if (!user_id || !selfie || !id_card) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-  try {
-    const result = await pool.query(
-      `INSERT INTO kyc_requests (user_id, selfie, id_card)
-       VALUES ($1, $2, $3)
-       RETURNING id`,
-      [user_id, selfie, id_card]
-    );
-    res.json({ success: true, id: result.rows[0].id });
-  } catch (err) {
-    res.status(500).json({ error: 'Database error' });
+// Ensure uploads directory exists
+if (!fs.existsSync('./uploads')) {
+  fs.mkdirSync('./uploads');
+}
+const storage = multer.diskStorage({
+  destination: './uploads/',
+  filename: (req, file, cb) => {
+    const uniqueName = Date.now() + '-' + file.originalname.replace(/\s/g, "_");
+    cb(null, uniqueName);
   }
 });
+const upload = multer({ storage });
 
-// Get all KYC requests (admin review)
-router.get('/', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM kyc_requests ORDER BY created_at DESC');
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Database error' });
+// --------- Submit new KYC (User uploads selfie + id_card) ---------
+router.post(
+  '/',
+  authenticateToken,
+  upload.fields([
+    { name: 'selfie', maxCount: 1 },
+    { name: 'id_card', maxCount: 1 }
+  ]),
+  async (req, res) => {
+    const user_id = req.user.id;
+    const selfie = req.files?.selfie ? req.files.selfie[0].filename : null;
+    const id_card = req.files?.id_card ? req.files.id_card[0].filename : null;
+
+    if (!selfie || !id_card) {
+      return res.status(400).json({ error: 'Missing required files' });
+    }
+    try {
+      await pool.query(
+        `UPDATE users
+         SET kyc_status = 'pending', kyc_selfie = $1, kyc_id_card = $2
+         WHERE id = $3`,
+        [selfie, id_card, user_id]
+      );
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Database error' });
+    }
   }
-});
+);
 
-// Approve/Reject KYC (admin control)
-router.post('/:id/status', async (req, res) => {
-  const { status } = req.body;
-  const { id } = req.params;
-  if (!["approved", "rejected", "pending"].includes(status)) {
-    return res.status(400).json({ error: "Invalid status" });
-  }
+// --------- Get KYC status (user, JWT protected) ---------
+router.get('/status', authenticateToken, async (req, res) => {
+  const user_id = req.user.id;
   try {
-    await pool.query('UPDATE kyc_requests SET status = $1 WHERE id = $2', [status, id]);
-    // Optional: also update user table if needed
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: 'Database error' });
-  }
-});
-
-// GET current user's KYC status (require user_id from token/session)
-router.get('/status', async (req, res) => {
-  // If you use JWT, get user id from req.user or req.auth
-  const user_id = req.user ? req.user.id : req.query.user_id; // fallback for demo/testing
-  if (!user_id) return res.status(401).json({ error: "Unauthorized" });
-
-  try {
-    const result = await pool.query(
-      `SELECT status FROM kyc_requests WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+    const { rows } = await pool.query(
+      "SELECT kyc_status FROM users WHERE id = $1",
       [user_id]
     );
-    if (result.rows.length === 0) return res.json({ status: "unverified" });
-    res.json({ status: result.rows[0].status });
+    if (!rows[0]) return res.json({ status: "unverified" });
+    res.json({ status: rows[0].kyc_status || "unverified" });
   } catch (err) {
     res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// --------- ADMIN: Approve/Reject KYC status ---------
+// (Should be POST /admin/kyc-status in admin, but you can keep for quick use)
+router.post('/admin/status', async (req, res) => {
+  const { user_id, status } = req.body;
+  if (!user_id || !['approved', 'rejected', 'pending'].includes(status)) {
+    return res.status(400).json({ error: "Invalid input" });
+  }
+  try {
+    await pool.query(
+      `UPDATE users SET kyc_status = $1 WHERE id = $2`,
+      [status, user_id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
   }
 });
 

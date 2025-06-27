@@ -1,9 +1,10 @@
-// routes/auth.js
+const { authenticateToken } = require('../middleware/auth');
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 
 // Email transporter
 const transporter = nodemailer.createTransport({
@@ -14,7 +15,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Register
+// Register (with duplicate email check and pre-setup for balances)
 router.post('/register', async (req, res) => {
   const { username, email, password } = req.body;
   if (!username || !email || !password) {
@@ -24,13 +25,25 @@ router.post('/register', async (req, res) => {
   try {
     // Check for existing user
     const { rows: existing } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-    if (existing.length > 0) return res.status(400).json({ message: 'Email already registered' });
+    if (existing.length > 0) return res.status(409).json({ error: 'This email is already registered. Please log in.' });
 
     // OTP
     const otp = crypto.randomInt(100000, 999999).toString();
     const result = await pool.query(
-      'INSERT INTO users (username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, 0) RETURNING id',
-      [username, email, password, 0, otp]
+  'INSERT INTO users (username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+  [username, email, password, 0, otp, false]
+);
+    const userId = result.rows[0].id;
+
+    // Insert balances for all coins (multi-coin support)
+    const coins = ["USDT", "BTC", "ETH", "SOL", "XRP", "TON"];
+    await Promise.all(
+      coins.map((coin) => 
+        pool.query(
+          `INSERT INTO user_balances (user_id, coin, balance) VALUES ($1, $2, 0)`,
+          [userId, coin]
+        )
+      )
     );
 
     // Send OTP Email
@@ -44,34 +57,47 @@ router.post('/register', async (req, res) => {
       if (err) console.error('❌ OTP email error:', err);
     });
 
-    res.status(201).json({ message: 'User registered! OTP sent.', userId: result.rows[0].id });
+    res.status(201).json({ message: 'User registered! OTP sent.', userId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Login
+
+// Login (returns JWT, supports email or username)
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;
   try {
-    const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const { rows } = await pool.query(
+      `SELECT * FROM users WHERE LOWER(email) = LOWER($1) OR LOWER(username) = LOWER($1)`,
+      [email]
+    );
     const user = rows[0];
     if (!user || user.password !== password) {
-      return res.status(400).json({ message: 'Invalid email or password' });
+      return res.status(400).json({ error: 'Invalid email or password' });
     }
+    if (user.verified === false || user.verified === 0) {
+      return res.status(403).json({ error: "Please verify your email with OTP before logging in." });
+    }
+    // Create JWT token
+    const payload = { id: user.id, username: user.username, email: user.email };
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.json({
+      token,
       user: {
-        id: user.id,
+        id: "NC-" + String(user.id).padStart(7, "0"),
         username: user.username,
         email: user.email
       }
     });
   } catch (err) {
-    res.status(500).json({ message: 'Database error' });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
-// OTP Verification
+
+
+// OTP Verification (POSTGRES BOOLEAN SAFE)
 router.post('/verify-otp', async (req, res) => {
   const { email, otp } = req.body;
   try {
@@ -79,7 +105,7 @@ router.post('/verify-otp', async (req, res) => {
     const user = rows[0];
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (user.otp === otp) {
-      await pool.query('UPDATE users SET verified = 1 WHERE email = $1', [email]);
+      await pool.query('UPDATE users SET verified = TRUE WHERE email = $1', [email]);
       res.json({ message: 'Email verified successfully' });
     } else {
       res.status(400).json({ error: 'Invalid OTP' });
@@ -88,5 +114,6 @@ router.post('/verify-otp', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 module.exports = router;

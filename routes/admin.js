@@ -1,4 +1,5 @@
 // routes/admin.js
+const { authenticateToken } = require('../middleware/auth');
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
@@ -16,7 +17,6 @@ router.get('/users', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error("❌ Failed to fetch users:", err.message);
     res.status(500).json({ message: 'Failed to fetch users' });
   }
 });
@@ -45,18 +45,14 @@ router.post('/deposits/:id/status', async (req, res) => {
   if (!["approved", "rejected", "pending"].includes(status)) {
     return res.status(400).json({ error: "Invalid status" });
   }
-
   try {
-    // First, get deposit info
     const { rows } = await pool.query('SELECT * FROM deposits WHERE id = $1', [id]);
     const deposit = rows[0];
     if (!deposit) return res.status(404).json({ error: "Deposit not found" });
 
-    // Update deposit status
     await pool.query('UPDATE deposits SET status = $1 WHERE id = $2', [status, id]);
 
     if (status === "approved") {
-      // Insert or update balance in user_balances table
       await pool.query(
         `INSERT INTO user_balances (user_id, coin, balance)
          VALUES ($1, $2, $3)
@@ -79,7 +75,6 @@ router.post('/withdrawals/:id/status', async (req, res) => {
   if (!["approved", "rejected", "pending"].includes(status)) {
     return res.status(400).json({ error: "Invalid status" });
   }
-
   try {
     const { rows } = await pool.query('SELECT * FROM withdrawals WHERE id = $1', [id]);
     const withdrawal = rows[0];
@@ -89,9 +84,7 @@ router.post('/withdrawals/:id/status', async (req, res) => {
     const row = statusRows[0];
     if (!row) return res.status(500).json({ error: "Database error" });
 
-    // Only proceed if not already approved (avoid double deduction)
     if (row.status !== 'approved' && status === "approved") {
-      // 1️⃣ Check user has enough balance for this coin
       const { rows: balRows } = await pool.query(
         'SELECT balance FROM user_balances WHERE user_id = $1 AND coin = $2',
         [withdrawal.user_id, withdrawal.coin]
@@ -101,16 +94,13 @@ router.post('/withdrawals/:id/status', async (req, res) => {
       if (parseFloat(userBal.balance) < parseFloat(withdrawal.amount)) {
         return res.status(400).json({ error: "Insufficient balance" });
       }
-      // 2️⃣ Update withdrawal status to approved
       await pool.query('UPDATE withdrawals SET status = $1 WHERE id = $2', [status, id]);
-      // 3️⃣ Subtract amount from user's balance for this coin
       await pool.query(
         'UPDATE user_balances SET balance = balance - $1 WHERE user_id = $2 AND coin = $3',
         [withdrawal.amount, withdrawal.user_id, withdrawal.coin]
       );
       return res.json({ success: true, balanceReduced: true });
     } else {
-      // If not approving, just update status
       await pool.query('UPDATE withdrawals SET status = $1 WHERE id = $2', [status, id]);
       res.json({ success: true, balanceReduced: false });
     }
@@ -123,14 +113,8 @@ router.post('/withdrawals/:id/status', async (req, res) => {
 router.delete('/users/:id', async (req, res) => {
   const userId = req.params.id;
   if (!userId) return res.status(400).json({ error: "Missing user ID" });
-
   try {
-    // Delete from all relevant tables
     await pool.query(`DELETE FROM users WHERE id = $1`, [userId]);
-    // Optionally: delete related data (add more queries if needed)
-    // await pool.query('DELETE FROM deposits WHERE user_id = $1', [userId]);
-    // await pool.query('DELETE FROM withdrawals WHERE user_id = $1', [userId]);
-    // await pool.query('DELETE FROM trades WHERE user_id = $1', [userId]);
     res.json({ success: true, message: "User deleted" });
   } catch (err) {
     res.status(500).json({ error: "Failed to delete user" });
@@ -140,7 +124,7 @@ router.delete('/users/:id', async (req, res) => {
 // mode: 'WIN', 'LOSE', or null to remove override
 router.post('/users/:id/trade-mode', async (req, res) => {
   const { id } = req.params;
-  const { mode } = req.body; // mode: "WIN", "LOSE", or null
+  const { mode } = req.body;
   if (mode !== "WIN" && mode !== "LOSE" && mode !== null && mode !== "") {
     return res.status(400).json({ error: "Invalid mode" });
   }
@@ -178,6 +162,125 @@ router.get('/users/:id/trade-mode', async (req, res) => {
   }
 });
 
-// --- (Future) Delete, Block, Unblock User endpoints here ---
+// --- GET all trades (admin panel) ---
+router.get('/trades', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT 
+          t.id,
+          t.user_id,
+          u.username,
+          t.coin,
+          t.direction,
+          t.amount,
+          t.result,
+          t.approved,
+          t.created_at,
+          t.timestamp,
+          t.start_price,
+          t.profit,
+          t.duration
+       FROM trades t
+       LEFT JOIN users u ON t.user_id = u.id
+       ORDER BY t.id DESC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch trades', detail: err.message });
+  }
+});
+
+
+// --- GET all withdrawals (admin panel) ---
+router.get('/withdrawals', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT 
+        id,
+        user_id,
+        coin,
+        amount,
+        address,
+        network,
+        created_at,
+        status
+      FROM withdrawals
+      ORDER BY id DESC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch withdrawals', detail: err.message });
+  }
+});
+
+// --- GET all deposit addresses (for WalletPage.js) ---
+router.get('/deposit-addresses', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT coin, address, qr_url FROM deposit_addresses ORDER BY coin`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'DB error: ' + err.message });
+  }
+});
+
+// --- Admin: Add/Update deposit address (with QR image upload) ---
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
+
+// Ensure uploads dir exists
+const depositUploadsDir = path.resolve(__dirname, '../../novachain-backend/uploads');
+if (!fs.existsSync(depositUploadsDir)) {
+  fs.mkdirSync(depositUploadsDir, { recursive: true });
+}
+const storage = multer.diskStorage({
+  destination: depositUploadsDir,
+  filename: (req, file, cb) => {
+    const safeCoin = req.body.coin.replace(/[^a-z0-9]/gi, '_');
+    cb(null, safeCoin + '_' + Date.now() + path.extname(file.originalname));
+  }
+});
+const upload = multer({ storage });
+
+// Upsert deposit address for a coin (and QR image)
+router.post('/deposit-addresses', upload.single('qr'), async (req, res) => {
+  const { coin, address } = req.body;
+  let qr_url = null;
+
+  if (!coin || !address) return res.status(400).json({ error: 'Missing coin or address' });
+
+  // If QR uploaded, set file url (your server serves /uploads)
+  if (req.file) {
+  qr_url = `/uploads/${req.file.filename}`; // no deposit_qr in path
+}
+
+  try {
+    // If not uploading QR, preserve previous QR!
+    let updateQr = '';
+    let params;
+    if (qr_url) {
+      updateQr = ', qr_url = $3';
+      params = [address, coin, qr_url];
+    } else {
+      params = [address, coin];
+    }
+
+    const upsertSql = qr_url
+      ? `INSERT INTO deposit_addresses (address, coin, qr_url, updated_at)
+           VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (coin)
+           DO UPDATE SET address = $1, qr_url = $3, updated_at = NOW()`
+      : `UPDATE deposit_addresses SET address = $1, updated_at = NOW() WHERE coin = $2`;
+
+    await pool.query(upsertSql, params);
+
+    res.json({ success: true, coin, address, qr_url });
+  } catch (err) {
+    res.status(500).json({ error: 'DB error: ' + err.message });
+  }
+});
+
 
 module.exports = router;
