@@ -1,15 +1,24 @@
 // routes/admin.js
-// routes/admin.js
+
 const { authenticateToken } = require('../middleware/auth');
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
-const multer = require('multer');   // <-- ADD
-const fs = require('fs');           // <-- ADD
-const path = require('path');       // <-- ADD
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
+const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN;
+
+// --- Admin API key middleware ---
+function requireAdminApiKey(req, res, next) {
+  if (req.headers['x-admin-token'] === ADMIN_API_TOKEN) {
+    return next();
+  }
+  return res.status(403).json({ error: "Admin token missing or invalid" });
+}
 
 // --- GET all users (admin panel) ---
-router.get('/users', async (req, res) => {
+router.get('/users', requireAdminApiKey, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT 
@@ -26,7 +35,7 @@ router.get('/users', async (req, res) => {
 });
 
 // --- Approve/Reject KYC (admin) ---
-router.post('/kyc-status', async (req, res) => {
+router.post('/kyc-status', requireAdminApiKey, async (req, res) => {
   const { user_id, status } = req.body;
   if (!user_id || !['approved', 'rejected', 'pending'].includes(status)) {
     return res.status(400).json({ error: "Invalid input" });
@@ -43,7 +52,7 @@ router.post('/kyc-status', async (req, res) => {
 });
 
 // --- Approve/Reject Deposit (admin) ---
-router.post('/deposits/:id/status', async (req, res) => {
+router.post('/deposits/:id/status', requireAdminApiKey, async (req, res) => {
   const { status } = req.body;
   const { id } = req.params;
   if (!["approved", "rejected", "pending"].includes(status)) {
@@ -73,7 +82,7 @@ router.post('/deposits/:id/status', async (req, res) => {
 });
 
 // --- Approve/Reject Withdrawal (admin) ---
-router.post('/withdrawals/:id/status', async (req, res) => {
+router.post('/withdrawals/:id/status', requireAdminApiKey, async (req, res) => {
   const { status } = req.body;
   const { id } = req.params;
   if (!["approved", "rejected", "pending"].includes(status)) {
@@ -114,7 +123,7 @@ router.post('/withdrawals/:id/status', async (req, res) => {
 });
 
 // --- Delete User (Admin) ---
-router.delete('/users/:id', async (req, res) => {
+router.delete('/users/:id', requireAdminApiKey, async (req, res) => {
   const userId = req.params.id;
   if (!userId) return res.status(400).json({ error: "Missing user ID" });
   try {
@@ -125,8 +134,8 @@ router.delete('/users/:id', async (req, res) => {
   }
 });
 
-// mode: 'WIN', 'LOSE', or null to remove override
-router.post('/users/:id/trade-mode', async (req, res) => {
+// --- Set/remove user trade-mode override (admin) ---
+router.post('/users/:id/trade-mode', requireAdminApiKey, async (req, res) => {
   const { id } = req.params;
   const { mode } = req.body;
   if (mode !== "WIN" && mode !== "LOSE" && mode !== null && mode !== "") {
@@ -152,8 +161,8 @@ router.post('/users/:id/trade-mode', async (req, res) => {
   }
 });
 
-// ---- Get current user trade mode ----
-router.get('/users/:id/trade-mode', async (req, res) => {
+// --- Get current user trade mode (admin) ---
+router.get('/users/:id/trade-mode', requireAdminApiKey, async (req, res) => {
   const { id } = req.params;
   try {
     const { rows } = await pool.query(
@@ -167,7 +176,7 @@ router.get('/users/:id/trade-mode', async (req, res) => {
 });
 
 // --- GET all trades (admin panel) ---
-router.get('/trades', async (req, res) => {
+router.get('/trades', requireAdminApiKey, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT 
@@ -194,9 +203,8 @@ router.get('/trades', async (req, res) => {
   }
 });
 
-
 // --- GET all withdrawals (admin panel) ---
-router.get('/withdrawals', async (req, res) => {
+router.get('/withdrawals', requireAdminApiKey, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT 
@@ -218,7 +226,7 @@ router.get('/withdrawals', async (req, res) => {
 });
 
 // --- GET all deposit addresses (for WalletPage.js) ---
-router.get('/deposit-addresses', async (req, res) => {
+router.get('/deposit-addresses', requireAdminApiKey, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT coin, address, qr_url FROM deposit_addresses ORDER BY coin`
@@ -244,7 +252,7 @@ const depositQrStorage = multer.diskStorage({
 const depositQrUpload = multer({ storage: depositQrStorage });
 
 // POST /api/admin/deposit-addresses
-router.post('/deposit-addresses', depositQrUpload.single('qr'), async (req, res) => {
+router.post('/deposit-addresses', requireAdminApiKey, depositQrUpload.single('qr'), async (req, res) => {
   const { coin, address } = req.body;
   let qr_url = null;
   if (!coin || !address) return res.status(400).json({ error: 'Missing coin or address' });
@@ -274,7 +282,5 @@ router.post('/deposit-addresses', depositQrUpload.single('qr'), async (req, res)
     res.status(500).json({ error: 'DB error: ' + err.message });
   }
 });
-
-
 
 module.exports = router;
