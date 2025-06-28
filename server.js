@@ -86,10 +86,26 @@ app.get('/api/deposit-addresses', async (req, res) => {
   }
 });
 
+// --- ADMIN: Fetch ALL trades for admin backend ---
+app.get('/api/trades', async (req, res) => {
+  // Only allow admin backend requests!
+  if (req.headers['x-admin-token'] !== process.env.ADMIN_API_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  try {
+    const { rows } = await pool.query('SELECT * FROM trades ORDER BY timestamp DESC');
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'DB error' });
+  }
+});
+
+
 // Catch-all for unknown API routes
 app.use((req, res) => {
   res.status(404).json({ error: 'API route not found' });
 });
+
 
 // --------- START SERVER ---------
 const PORT = process.env.PORT || 5000;
