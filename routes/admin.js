@@ -175,6 +175,37 @@ router.get('/users/:id/trade-mode', requireAdminApiKey, async (req, res) => {
   }
 });
 
+// --- CHANGE ADMIN PASSWORD (secure) ---
+const bcrypt = require('bcrypt');
+
+// Change password route (POST /api/admin/change-password)
+router.post('/change-password', requireAdminApiKey, async (req, res) => {
+  const { email, currentPassword, newPassword } = req.body;
+
+  if (!email || !currentPassword || !newPassword)
+    return res.status(400).json({ error: "Missing required fields" });
+
+  try {
+    // 1. Get the admin user by email
+    const { rows } = await pool.query(`SELECT id, password_hash FROM users WHERE email = $1 AND is_admin = TRUE`, [email]);
+    const user = rows[0];
+    if (!user) return res.status(404).json({ error: "Admin not found" });
+
+    // 2. Check current password
+    const valid = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!valid) return res.status(401).json({ error: "Current password is incorrect" });
+
+    // 3. Hash new password & update in DB
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await pool.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [newHash, user.id]);
+
+    res.json({ success: true, message: "Password changed successfully!" });
+  } catch (err) {
+    res.status(500).json({ error: "DB error: " + err.message });
+  }
+});
+
+
 // --- GET all trades (admin panel) ---
 router.get('/trades', requireAdminApiKey, async (req, res) => {
   try {
@@ -282,5 +313,7 @@ router.post('/deposit-addresses', requireAdminApiKey, depositQrUpload.single('qr
     res.status(500).json({ error: 'DB error: ' + err.message });
   }
 });
+
+
 
 module.exports = router;
