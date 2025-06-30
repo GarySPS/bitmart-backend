@@ -85,4 +85,37 @@ router.get('/:symbol', async (req, res) => {
   res.status(404).json({ error: "Not found" });
 });
 
+// --- GET /api/chart/btcusdt (BTC/USDT candles for PremiumChart) ---
+router.get('/chart/btcusdt', async (req, res) => {
+  try {
+    // Use the OHLCV endpoint for BTC (id=1)
+    const response = await axios.get(
+      'https://pro-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical',
+      {
+        params: {
+          id: 1,           // BTC ID in CMC
+          convert: 'USDT', // Convert to USDT
+          time_start: Math.floor(Date.now() / 1000) - 60 * 60 * 24 * 2, // last 2 days (or more, as you want)
+          time_end: Math.floor(Date.now() / 1000),
+          interval: '15m', // or '1h', etc.
+        },
+        headers: { 'X-CMC_PRO_API_KEY': CMC_API_KEY }
+      }
+    );
+
+    const candles = response.data.data.quotes.map(q => ({
+      time: Math.floor(new Date(q.timestamp).getTime() / 1000), // unix seconds
+      open: q.quote.USDT.open,
+      high: q.quote.USDT.high,
+      low: q.quote.USDT.low,
+      close: q.quote.USDT.close,
+    }));
+
+    res.json({ candles });
+  } catch (err) {
+    // fallback: empty or static candles
+    res.json({ candles: [] });
+  }
+});
+
 module.exports = router;
