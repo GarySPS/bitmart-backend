@@ -9,21 +9,31 @@ const path = require('path');
 const bcrypt = require('bcrypt');
 
 // Ensure uploads dir exists
-if (!fs.existsSync('./uploads')) fs.mkdirSync('./uploads');
+const UPLOADS_DIR = path.join(__dirname, '../uploads');
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 
+// Multer storage, limits and file type filter
 const storage = multer.diskStorage({
-  destination: './uploads/',
+  destination: UPLOADS_DIR,
   filename: (req, file, cb) => {
     const uniqueName = Date.now() + '-' + file.originalname.replace(/\s/g, "_");
     cb(null, uniqueName);
   }
 });
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith("image/")) {
+      return cb(new Error("Only image files are allowed!"));
+    }
+    cb(null, true);
+  }
+});
 
 // -------- GET /api/profile (JWT-protected) --------
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    // 1. Get user info
     const result = await pool.query(
       "SELECT id, username, email, avatar, referral FROM users WHERE id = $1",
       [req.user.id]
@@ -31,7 +41,6 @@ router.get('/', authenticateToken, async (req, res) => {
     const row = result.rows[0];
     if (!row) return res.status(404).json({ error: "User not found" });
 
-    // 2. Get user balance (sum all coins)
     const balanceRes = await pool.query(
       "SELECT SUM(balance) as total_usd FROM user_balances WHERE user_id = $1",
       [req.user.id]
@@ -62,12 +71,34 @@ router.post('/avatar', authenticateToken, upload.single('avatar'), async (req, r
   const filename = req.file.filename;
 
   try {
+    // Fetch current avatar filename
+    const { rows } = await pool.query("SELECT avatar FROM users WHERE id = $1", [userId]);
+    const oldAvatar = rows[0]?.avatar;
+
+    // Update DB
     await pool.query(
       "UPDATE users SET avatar = $1 WHERE id = $2",
       [filename, userId]
     );
+
+    // Delete old avatar from disk if exists, not default, and not current
+    if (
+      oldAvatar &&
+      oldAvatar !== filename &&
+      fs.existsSync(path.join(UPLOADS_DIR, oldAvatar)) &&
+      !["logo192.png", "logo192_new.png"].includes(oldAvatar)
+    ) {
+      fs.unlink(path.join(UPLOADS_DIR, oldAvatar), err => {
+        if (err) console.warn("⚠️ Failed to delete old avatar:", err);
+      });
+    }
+
     res.json({ success: true, avatar: `/uploads/${filename}` });
   } catch (err) {
+    // If multer threw error (fileFilter, fileSize), send nice message
+    if (err instanceof multer.MulterError || err.message) {
+      return res.status(400).json({ error: err.message || "Upload failed" });
+    }
     res.status(500).json({ error: "Failed to update avatar" });
   }
 });
@@ -80,14 +111,12 @@ router.post('/change-password', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: "Missing old or new password" });
   }
   try {
-    // Get stored password hash or value
     const { rows } = await pool.query("SELECT password FROM users WHERE id = $1", [userId]);
     const stored = rows[0]?.password;
     if (!stored) {
       return res.status(400).json({ error: "Incorrect old password" });
     }
 
-    // If already hashed, compare with bcrypt. Otherwise, compare plaintext for legacy support.
     let match = false;
     if (stored.startsWith("$2")) {
       match = await bcrypt.compare(old_password, stored);
@@ -99,14 +128,12 @@ router.post('/change-password', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "Incorrect old password" });
     }
 
-    // Hash the new password before saving
     const newHash = await bcrypt.hash(new_password, 10);
     await pool.query("UPDATE users SET password = $1 WHERE id = $2", [newHash, userId]);
     res.json({ success: true, message: "Password changed successfully" });
   } catch (err) {
     res.status(500).json({ error: "Failed to change password" });
   }
-});  // <--- You missed this bracket!
+});
 
 module.exports = router;
-
