@@ -2,15 +2,26 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
 const bcrypt = require('bcrypt');
 
-// SUPABASE STORAGE + MULTER MEMORY
-const supabase = require('../utils/supabase');
-const multer = require('multer');
-const storage = multer.memoryStorage();
+// Ensure uploads dir exists
+const UPLOADS_DIR = path.join(__dirname, '../uploads');
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
+
+// Multer storage, limits and file type filter
+const storage = multer.diskStorage({
+  destination: UPLOADS_DIR,
+  filename: (req, file, cb) => {
+    const uniqueName = Date.now() + '-' + file.originalname.replace(/\s/g, "_");
+    cb(null, uniqueName);
+  }
+});
 const upload = multer({
   storage,
-  limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
   fileFilter: (req, file, cb) => {
     if (!file.mimetype.startsWith("image/")) {
       return cb(new Error("Only image files are allowed!"));
@@ -35,13 +46,7 @@ router.get('/', authenticateToken, async (req, res) => {
     );
     const total_usd = Number(balanceRes.rows[0].total_usd) || 0;
 
-    // Get avatar URL from Supabase (if avatar exists)
-    let avatarUrl = "";
-    if (row.avatar) {
-      const { data } = supabase.storage.from('avatars').getPublicUrl(row.avatar);
-      avatarUrl = data?.publicUrl || "";
-    }
-
+    let avatarUrl = row.avatar ? (`/uploads/${row.avatar}`) : "";
     res.json({
       user: {
         id: "NC-" + String(row.id).padStart(7, "0"),
@@ -58,37 +63,42 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
-// -------- POST /api/profile/avatar (SUPABASE STORAGE) --------
+// -------- POST /api/profile/avatar (update avatar) --------
 router.post('/avatar', authenticateToken, upload.single('avatar'), async (req, res) => {
   const userId = req.user.id;
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-
-  const ext = (req.file.originalname.split('.').pop() || 'jpg').toLowerCase();
-  const filename = `${userId}_${Date.now()}.${ext}`;
+  const filename = req.file.filename;
 
   try {
-    // Upload to Supabase Storage bucket 'avatars'
-    const { error: uploadError } = await supabase.storage
-      .from('avatars')
-      .upload(filename, req.file.buffer, {
-        contentType: req.file.mimetype,
-        upsert: true
-      });
-    if (uploadError) throw uploadError;
+    // Fetch current avatar filename
+    const { rows } = await pool.query("SELECT avatar FROM users WHERE id = $1", [userId]);
+    const oldAvatar = rows[0]?.avatar;
 
-    // Get public URL
-    const { data } = supabase.storage.from('avatars').getPublicUrl(filename);
-    const publicUrl = data?.publicUrl || "";
-
-    // Save filename to users.avatar
+    // Update DB
     await pool.query(
       "UPDATE users SET avatar = $1 WHERE id = $2",
       [filename, userId]
     );
 
-    res.json({ success: true, avatar: publicUrl });
+    // Delete old avatar from disk if exists, not default, and not current
+    if (
+      oldAvatar &&
+      oldAvatar !== filename &&
+      fs.existsSync(path.join(UPLOADS_DIR, oldAvatar)) &&
+      !["logo192.png", "logo192_new.png"].includes(oldAvatar)
+    ) {
+      fs.unlink(path.join(UPLOADS_DIR, oldAvatar), err => {
+        if (err) console.warn("⚠️ Failed to delete old avatar:", err);
+      });
+    }
+
+    res.json({ success: true, avatar: `/uploads/${filename}` });
   } catch (err) {
-    res.status(500).json({ error: err.message || "Failed to upload avatar" });
+    // If multer threw error (fileFilter, fileSize), send nice message
+    if (err instanceof multer.MulterError || err.message) {
+      return res.status(400).json({ error: err.message || "Upload failed" });
+    }
+    res.status(500).json({ error: "Failed to update avatar" });
   }
 });
 
