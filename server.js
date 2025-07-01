@@ -54,7 +54,7 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 // --------- ROUTE MOUNTING ---------
-app.use('/api/auth', authRoutes);
+app.use('/api', authRoutes);  
 app.use('/api/admin', adminRoutes);
 app.use('/api/trade', tradeRoutes);
 app.use('/api/prices', pricesRoutes);          // GET /api/prices        (top 20 coins)
