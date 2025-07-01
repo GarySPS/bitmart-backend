@@ -6,6 +6,7 @@ const { authenticateToken } = require('../middleware/auth');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
+const bcrypt = require('bcrypt');
 
 // Ensure uploads dir exists
 if (!fs.existsSync('./uploads')) fs.mkdirSync('./uploads');
@@ -79,16 +80,33 @@ router.post('/change-password', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: "Missing old or new password" });
   }
   try {
-    // Check old password
+    // Get stored password hash or value
     const { rows } = await pool.query("SELECT password FROM users WHERE id = $1", [userId]);
-    if (!rows[0] || rows[0].password !== old_password) {
+    const stored = rows[0]?.password;
+    if (!stored) {
       return res.status(400).json({ error: "Incorrect old password" });
     }
-    await pool.query("UPDATE users SET password = $1 WHERE id = $2", [new_password, userId]);
+
+    // If already hashed, compare with bcrypt. Otherwise, compare plaintext for legacy support.
+    let match = false;
+    if (stored.startsWith("$2")) {
+      match = await bcrypt.compare(old_password, stored);
+    } else {
+      match = (old_password === stored);
+    }
+
+    if (!match) {
+      return res.status(400).json({ error: "Incorrect old password" });
+    }
+
+    // Hash the new password before saving
+    const newHash = await bcrypt.hash(new_password, 10);
+    await pool.query("UPDATE users SET password = $1 WHERE id = $2", [newHash, userId]);
     res.json({ success: true, message: "Password changed successfully" });
   } catch (err) {
     res.status(500).json({ error: "Failed to change password" });
   }
-});
+});  // <--- You missed this bracket!
 
 module.exports = router;
+
