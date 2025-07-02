@@ -40,6 +40,8 @@ app.use(cors({
 app.use(express.json());
 app.use('/api/balance/history', balanceHistoryRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/api/auth', require('./routes/auth'));
+
 
 
 // --- Multer upload config ---
