@@ -66,7 +66,8 @@ app.use('/api/withdrawals', withdrawalRoutes);
 app.use('/api/kyc', kycRoutes);
 app.use('/api/profile', profileRoutes);        // GET /api/profile       (user info)
 app.use('/api/balance', balanceRoutes);        // GET /api/balance       (multi-coin balances)
-app.use('/api/convert', convertRoutes);        
+app.use('/api/convert', convertRoutes);     
+app.use('/api/users', userRoutes);   
 
 
 // --------- BASIC ROOT CHECK ---------

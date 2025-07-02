@@ -73,5 +73,28 @@ router.post('/password', authenticateToken, async (req, res) => {
   }
 });
 
+// POST /api/users/forgot-password
+router.post('/forgot-password', async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: "Email required" });
+
+  try {
+    const { rows } = await pool.query(
+      "SELECT id, email FROM users WHERE email = $1", [email]
+    );
+    const user = rows[0];
+    if (!user) {
+      // Always return success for security (don't reveal if email exists)
+      return res.json({ message: "If this email exists, OTP will be sent" });
+    }
+
+    // TODO: Generate OTP and send email logic here
+    // For now, just respond with a placeholder
+    res.json({ message: "If this email exists, OTP will be sent" });
+  } catch (err) {
+    console.error("Forgot password error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 module.exports = router;
