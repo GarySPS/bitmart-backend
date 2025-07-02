@@ -1,3 +1,4 @@
+const bcrypt = require('bcrypt');
 const { authenticateToken } = require('../middleware/auth');
 const express = require('express');
 const router = express.Router();
@@ -21,18 +22,16 @@ router.post('/register', async (req, res) => {
   if (!username || !email || !password) {
     return res.status(400).json({ error: 'Missing username, email or password' });
   }
-
   try {
-    // Check for existing user
     const { rows: existing } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     if (existing.length > 0) return res.status(409).json({ error: 'This email is already registered. Please log in.' });
 
-    // OTP
+    const hashedPassword = await bcrypt.hash(password, 10); // <--- secure hash!
     const otp = crypto.randomInt(100000, 999999).toString();
     const result = await pool.query(
-  'INSERT INTO users (username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-  [username, email, password, 0, otp, false]
-);
+      'INSERT INTO users (username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+      [username, email, hashedPassword, 0, otp, false]
+    );
     const userId = result.rows[0].id;
 
     // Insert balances for all coins (multi-coin support)
@@ -73,9 +72,14 @@ router.post('/login', async (req, res) => {
       [email]
     );
     const user = rows[0];
-    if (!user || user.password !== password) {
-      return res.status(400).json({ error: 'Invalid email or password' });
-    }
+    if (!user) {
+  return res.status(400).json({ error: 'Invalid email or password' });
+}
+const match = await bcrypt.compare(password, user.password);
+if (!match) {
+  return res.status(400).json({ error: 'Invalid email or password' });
+}
+
     if (user.verified === false || user.verified === 0) {
       return res.status(403).json({ error: "Please verify your email with OTP before logging in." });
     }

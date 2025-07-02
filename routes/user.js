@@ -42,7 +42,6 @@ router.post('/password', authenticateToken, async (req, res) => {
   }
 
   try {
-    // Get user's current password from DB
     const { rows } = await pool.query(
       "SELECT password FROM users WHERE id = $1",
       [userId]
@@ -50,20 +49,18 @@ router.post('/password', authenticateToken, async (req, res) => {
     const user = rows[0];
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    // Check if current password matches
-    if (user.password !== currentPassword) {
+    const match = await bcrypt.compare(currentPassword, user.password);
+    if (!match) {
       return res.status(401).json({ error: "Current password is incorrect" });
     }
-
-    // Optional: Prevent same password as before
     if (currentPassword === newPassword) {
       return res.status(400).json({ error: "New password must be different from the current password" });
     }
 
-    // Update password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
     await pool.query(
       "UPDATE users SET password = $1 WHERE id = $2",
-      [newPassword, userId]
+      [hashedPassword, userId]
     );
 
     res.json({ message: "Password changed successfully" });
