@@ -1,4 +1,4 @@
-// routes/user.js
+const bcrypt = require('bcrypt'); 
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
@@ -32,6 +32,7 @@ router.get('/balance', authenticateToken, async (req, res) => {
   }
 });
 
+
 // POST /api/users/password -- Change current user's password (JWT-protected)
 router.post('/password', authenticateToken, async (req, res) => {
   const userId = req.user.id;
@@ -49,7 +50,12 @@ router.post('/password', authenticateToken, async (req, res) => {
     const user = rows[0];
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    const match = await bcrypt.compare(currentPassword, user.password);
+    let match = false;
+    if (user.password.startsWith("$2b$")) {
+      match = await bcrypt.compare(currentPassword, user.password);
+    } else {
+      match = (currentPassword === user.password);
+    }
     if (!match) {
       return res.status(401).json({ error: "Current password is incorrect" });
     }
@@ -69,6 +75,7 @@ router.post('/password', authenticateToken, async (req, res) => {
     res.status(500).json({ error: "Failed to change password" });
   }
 });
+
 
 // POST /api/users/forgot-password
 router.post('/forgot-password', async (req, res) => {

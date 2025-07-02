@@ -73,12 +73,20 @@ router.post('/login', async (req, res) => {
     );
     const user = rows[0];
     if (!user) {
-  return res.status(400).json({ error: 'Invalid email or password' });
-}
-const match = await bcrypt.compare(password, user.password);
-if (!match) {
-  return res.status(400).json({ error: 'Invalid email or password' });
-}
+      return res.status(400).json({ error: 'Invalid email or password' });
+    }
+
+    let match = false;
+    if (user.password.startsWith("$2b$")) {
+      // bcrypt hash
+      match = await bcrypt.compare(password, user.password);
+    } else {
+      // plain text fallback for legacy users
+      match = (password === user.password);
+    }
+    if (!match) {
+      return res.status(400).json({ error: 'Invalid email or password' });
+    }
 
     if (user.verified === false || user.verified === 0) {
       return res.status(403).json({ error: "Please verify your email with OTP before logging in." });
@@ -98,6 +106,7 @@ if (!match) {
     res.status(500).json({ error: 'Database error' });
   }
 });
+
 
 
 
