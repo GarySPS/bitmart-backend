@@ -21,6 +21,8 @@ const profileRoutes = require('./routes/profile');
 const balanceRoutes = require('./routes/balance');
 const convertRoutes = require('./routes/convert');
 const balanceHistoryRoutes = require('./routes/balanceHistory');
+const userRoutes = require('./routes/user');
+
 
 const app = express();
 
