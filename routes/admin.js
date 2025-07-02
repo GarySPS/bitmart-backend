@@ -123,16 +123,43 @@ router.post('/withdrawals/:id/status', requireAdminApiKey, async (req, res) => {
 });
 
 // --- Delete User (Admin) ---
+// Deletes user, balances, trades, deposits, withdrawals, user_trade_modes, and KYC info
 router.delete('/users/:id', requireAdminApiKey, async (req, res) => {
   const userId = req.params.id;
   if (!userId) return res.status(400).json({ error: "Missing user ID" });
+
+  const client = await pool.connect();
   try {
-    await pool.query(`DELETE FROM users WHERE id = $1`, [userId]);
-    res.json({ success: true, message: "User deleted" });
+    await client.query('BEGIN');
+    // Delete user KYC file references, if needed (optional: remove files from disk)
+    const kycRes = await client.query('SELECT kyc_selfie, kyc_id_card FROM users WHERE id = $1', [userId]);
+    const { kyc_selfie, kyc_id_card } = kycRes.rows[0] || {};
+    // Optionally, delete files from disk
+    [kyc_selfie, kyc_id_card].forEach(filePath => {
+      if (filePath && fs.existsSync(path.join(__dirname, '..', filePath))) {
+        fs.unlinkSync(path.join(__dirname, '..', filePath));
+      }
+    });
+
+    // Delete in correct order due to foreign key constraints
+    await client.query(`DELETE FROM user_balances WHERE user_id = $1`, [userId]);
+    await client.query(`DELETE FROM trades WHERE user_id = $1`, [userId]);
+    await client.query(`DELETE FROM deposits WHERE user_id = $1`, [userId]);
+    await client.query(`DELETE FROM withdrawals WHERE user_id = $1`, [userId]);
+    await client.query(`DELETE FROM user_trade_modes WHERE user_id = $1`, [userId]);
+    // If you have a separate kyc table, delete here
+    // await client.query(`DELETE FROM kyc WHERE user_id = $1`, [userId]);
+    await client.query(`DELETE FROM users WHERE id = $1`, [userId]);
+    await client.query('COMMIT');
+    res.json({ success: true, message: "User and all related data deleted" });
   } catch (err) {
-    res.status(500).json({ error: "Failed to delete user" });
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: "Failed to delete user: " + err.message });
+  } finally {
+    client.release();
   }
 });
+
 
 // --- Set/remove user trade-mode override (admin) ---
 router.post('/users/:id/trade-mode', requireAdminApiKey, async (req, res) => {
