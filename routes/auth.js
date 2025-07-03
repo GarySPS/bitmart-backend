@@ -196,4 +196,42 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
+// --- Resend OTP (for registration) ---
+router.post('/resend-otp', async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'Email is required.' });
+
+  try {
+    // Check if user exists
+    const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'No account with that email.' });
+    }
+    const user = rows[0];
+
+    // Generate a new OTP
+    const otp = crypto.randomInt(100000, 999999).toString();
+    await pool.query('UPDATE users SET otp = $1 WHERE email = $2', [otp, email]);
+
+    // Send OTP Email
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'NovaChain OTP Verification',
+      text: `Hello${user.username ? " " + user.username : ""}, your OTP code is: ${otp}`
+    };
+    transporter.sendMail(mailOptions, (err) => {
+      if (err) {
+        console.error('❌ OTP resend email error:', err);
+        return res.status(500).json({ error: 'Failed to send OTP email.' });
+      }
+      res.json({ message: 'OTP code resent. Please check your email.' });
+    });
+  } catch (err) {
+    console.error('Resend OTP error:', err);
+    res.status(500).json({ error: 'Server error, could not resend OTP.' });
+  }
+});
+
+
 module.exports = router;
