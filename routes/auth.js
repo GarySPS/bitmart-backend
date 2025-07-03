@@ -128,5 +128,58 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
+// --- Forgot Password: Send OTP to Email ---
+router.post('/forgot-password', async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: "Email required" });
+
+  try {
+    const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (rows.length === 0) {
+      // Always return OK for privacy
+      return res.json({ message: "If this email exists, OTP sent" });
+    }
+    const user = rows[0];
+    const otp = crypto.randomInt(100000, 999999).toString();
+    await pool.query('UPDATE users SET otp = $1 WHERE email = $2', [otp, email]);
+
+    // Send email with OTP
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'NovaChain Password Reset OTP',
+      text: `Your NovaChain OTP for password reset is: ${otp}`
+    };
+    transporter.sendMail(mailOptions, (err) => {
+      if (err) console.error('❌ OTP email error:', err);
+    });
+
+    return res.json({ message: "If this email exists, OTP sent" });
+  } catch (err) {
+    console.error('Forgot password error', err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// --- Reset Password with OTP ---
+router.post('/reset-password', async (req, res) => {
+  const { email, otp, newPassword } = req.body;
+  if (!email || !otp || !newPassword) return res.status(400).json({ error: "All fields required" });
+
+  try {
+    const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (rows.length === 0) return res.status(400).json({ error: "Invalid email or OTP" });
+
+    const user = rows[0];
+    if (user.otp !== otp) return res.status(400).json({ error: "Invalid OTP" });
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await pool.query('UPDATE users SET password = $1, otp = NULL WHERE email = $2', [hashed, email]);
+    return res.json({ message: "Password reset successful" });
+  } catch (err) {
+    console.error('Reset password error', err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
 
 module.exports = router;
