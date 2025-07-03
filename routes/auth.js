@@ -16,23 +16,36 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Register (with duplicate email check and pre-setup for balances)
+// Register (random unique ID version)
 router.post('/register', async (req, res) => {
   const { username, email, password } = req.body;
   if (!username || !email || !password) {
     return res.status(400).json({ error: 'Missing username, email or password' });
   }
   try {
+    // Check duplicate email
     const { rows: existing } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     if (existing.length > 0) return res.status(409).json({ error: 'This email is already registered. Please log in.' });
 
-    const hashedPassword = await bcrypt.hash(password, 10); // <--- secure hash!
+    const hashedPassword = await bcrypt.hash(password, 10);
     const otp = crypto.randomInt(100000, 999999).toString();
-    const result = await pool.query(
-      'INSERT INTO users (username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-      [username, email, hashedPassword, 0, otp, false]
+
+    // Generate random unique ID (max 10 attempts)
+    let userId;
+    let retries = 0;
+    while (retries < 10) {
+      userId = crypto.randomInt(1, 1000000); // 1..999999
+      const idCheck = await pool.query('SELECT 1 FROM users WHERE id = $1', [userId]);
+      if (idCheck.rows.length === 0) break; // Unique
+      retries++;
+    }
+    if (retries === 10) return res.status(500).json({ error: "Could not assign unique user ID. Please try again." });
+
+    // Insert user with custom random ID
+    await pool.query(
+      'INSERT INTO users (id, username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      [userId, username, email, hashedPassword, 0, otp, false]
     );
-    const userId = result.rows[0].id;
 
     // Insert balances for all coins (multi-coin support)
     const coins = ["USDT", "BTC", "ETH", "SOL", "XRP", "TON"];
@@ -61,6 +74,7 @@ router.post('/register', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 // Login (returns JWT, supports email or username)
