@@ -46,7 +46,12 @@ router.get('/', authenticateToken, async (req, res) => {
     );
     const total_usd = Number(balanceRes.rows[0].total_usd) || 0;
 
-    let avatarUrl = row.avatar ? (`/uploads/${row.avatar}`) : "";
+    let avatarUrl = row.avatar
+      ? (row.avatar.startsWith('/') || row.avatar.startsWith('http') || row.avatar.startsWith('profile/')
+        ? row.avatar
+        : `/uploads/${row.avatar}`)
+      : "";
+
     res.json({
       user: {
         id: "NC-" + String(row.id).padStart(7, "0"),
@@ -63,7 +68,24 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
-// -------- POST /api/profile/avatar (update avatar) --------
+// -------- POST /api/profile/avatar --------
+// 1. Handle JSON Supabase-style avatar update
+router.post('/avatar', authenticateToken, async (req, res, next) => {
+  if (req.is('application/json')) {
+    const userId = req.user.id;
+    const { avatar } = req.body;
+    if (!avatar) return res.status(400).json({ error: "Missing avatar" });
+    try {
+      await pool.query("UPDATE users SET avatar = $1 WHERE id = $2", [avatar, userId]);
+      return res.json({ avatar });
+    } catch (err) {
+      return res.status(500).json({ error: "Failed to update avatar" });
+    }
+  }
+  next();
+});
+
+// 2. Handle multipart upload avatar update
 router.post('/avatar', authenticateToken, upload.single('avatar'), async (req, res) => {
   const userId = req.user.id;
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });

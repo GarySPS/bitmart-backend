@@ -22,6 +22,7 @@ const balanceRoutes = require('./routes/balance');
 const convertRoutes = require('./routes/convert');
 const balanceHistoryRoutes = require('./routes/balanceHistory');
 const userRoutes = require('./routes/user');
+const uploadRoute = require('./routes/upload');
 
 
 const app = express();
@@ -43,6 +44,7 @@ app.use(express.json());
 app.use('/api/balance/history', balanceHistoryRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/upload', uploadRoute);
 
 
 // --- Multer upload config ---
