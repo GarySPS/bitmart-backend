@@ -16,7 +16,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Register (random unique ID version)
+// Register (random unique ID version, with resend OTP for unverified)
 router.post('/register', async (req, res) => {
   const { username, email, password } = req.body;
   if (!username || !email || !password) {
@@ -25,8 +25,32 @@ router.post('/register', async (req, res) => {
   try {
     // Check duplicate email
     const { rows: existing } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-    if (existing.length > 0) return res.status(409).json({ error: 'This email is already registered. Please log in.' });
+    if (existing.length > 0) {
+      const user = existing[0];
+      if (!user.verified) {
+        // User exists but not verified: re-send OTP and inform user
+        const otp = crypto.randomInt(100000, 999999).toString();
+        await pool.query('UPDATE users SET otp = $1 WHERE email = $2', [otp, email]);
+        // Re-send OTP
+        const mailOptions = {
+          from: process.env.EMAIL_USER,
+          to: email,
+          subject: 'NovaChain OTP Verification',
+          text: `Hello${user.username ? " " + user.username : ""}, your OTP code is: ${otp}`
+        };
+        transporter.sendMail(mailOptions, (err) => {
+          if (err) console.error('❌ OTP email error:', err);
+        });
+        return res.status(200).json({ 
+          message: 'Account already exists but not verified. New OTP sent. Please check your email.' 
+        });
+      } else {
+        // Already registered & verified
+        return res.status(409).json({ error: 'This email is already registered. Please log in.' });
+      }
+    }
 
+    // If here, email does not exist: create user
     const hashedPassword = await bcrypt.hash(password, 10);
     const otp = crypto.randomInt(100000, 999999).toString();
 
@@ -74,6 +98,7 @@ router.post('/register', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 
