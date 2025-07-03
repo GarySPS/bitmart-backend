@@ -28,9 +28,11 @@ router.post('/register', async (req, res) => {
     if (existing.length > 0) {
       const user = existing[0];
       if (!user.verified) {
+
         // User exists but not verified: re-send OTP and inform user
         const otp = crypto.randomInt(100000, 999999).toString();
         await pool.query('UPDATE users SET otp = $1 WHERE email = $2', [otp, email]);
+        
         // Re-send OTP
         const mailOptions = {
           from: process.env.EMAIL_USER,
