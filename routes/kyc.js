@@ -2,21 +2,11 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db');
 const multer = require('multer');
-const fs = require('fs');
 const { authenticateToken } = require('../middleware/auth'); // Adjust path if needed
+const supabase = require('../supabaseClient'); // Make sure this path is correct
 
-// Ensure uploads directory exists
-if (!fs.existsSync('./uploads')) {
-  fs.mkdirSync('./uploads');
-}
-const storage = multer.diskStorage({
-  destination: './uploads/',
-  filename: (req, file, cb) => {
-    const uniqueName = Date.now() + '-' + file.originalname.replace(/\s/g, "_");
-    cb(null, uniqueName);
-  }
-});
-const upload = multer({ storage });
+// Multer in-memory storage (not disk)
+const upload = multer({ storage: multer.memoryStorage() });
 
 // --------- Submit new KYC (User uploads selfie + id_card) ---------
 router.post(
@@ -28,20 +18,43 @@ router.post(
   ]),
   async (req, res) => {
     const user_id = req.user.id;
-    const selfie = req.files?.selfie ? req.files.selfie[0].filename : null;
-    const id_card = req.files?.id_card ? req.files.id_card[0].filename : null;
+    const selfieFile = req.files?.selfie ? req.files.selfie[0] : null;
+    const idCardFile = req.files?.id_card ? req.files.id_card[0] : null;
 
-    if (!selfie || !id_card) {
+    if (!selfieFile || !idCardFile) {
       return res.status(400).json({ error: 'Missing required files' });
     }
     try {
+      // Unique filenames for KYC files
+      const selfieFilename = `kyc/${user_id}-selfie-${Date.now()}-${selfieFile.originalname.replace(/\s/g, "_")}`;
+      const idCardFilename = `kyc/${user_id}-idcard-${Date.now()}-${idCardFile.originalname.replace(/\s/g, "_")}`;
+
+      // Upload selfie to Supabase
+      const { error: selfieError } = await supabase.storage.from('kyc').upload(selfieFilename, selfieFile.buffer, {
+        contentType: selfieFile.mimetype,
+        upsert: true,
+      });
+      // Upload id_card to Supabase
+      const { error: idCardError } = await supabase.storage.from('kyc').upload(idCardFilename, idCardFile.buffer, {
+        contentType: idCardFile.mimetype,
+        upsert: true,
+      });
+      if (selfieError || idCardError) {
+        return res.status(500).json({ error: selfieError?.message || idCardError?.message });
+      }
+
+      // Get public URLs
+      const { data: selfieUrlObj } = supabase.storage.from('kyc').getPublicUrl(selfieFilename);
+      const { data: idCardUrlObj } = supabase.storage.from('kyc').getPublicUrl(idCardFilename);
+
+      // Save public URLs to DB
       await pool.query(
         `UPDATE users
          SET kyc_status = 'pending', kyc_selfie = $1, kyc_id_card = $2
          WHERE id = $3`,
-        [selfie, id_card, user_id]
+        [selfieUrlObj.publicUrl, idCardUrlObj.publicUrl, user_id]
       );
-      res.json({ success: true });
+      res.json({ success: true, selfieUrl: selfieUrlObj.publicUrl, idCardUrl: idCardUrlObj.publicUrl });
     } catch (err) {
       res.status(500).json({ error: 'Database error' });
     }
@@ -64,7 +77,6 @@ router.get('/status', authenticateToken, async (req, res) => {
 });
 
 // --------- ADMIN: Approve/Reject KYC status ---------
-// (Should be POST /admin/kyc-status in admin, but you can keep for quick use)
 router.post('/admin/status', async (req, res) => {
   const { user_id, status } = req.body;
   if (!user_id || !['approved', 'rejected', 'pending'].includes(status)) {

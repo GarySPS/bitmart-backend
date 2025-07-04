@@ -101,4 +101,47 @@ router.post('/forgot-password', async (req, res) => {
   }
 });
 
+// --- AVATAR UPLOAD ---
+// You need these dependencies at the top if not present:
+const multer = require('multer');
+const supabase = require('../utils/supabaseClient'); // or '../supabaseClient' if that is your path
+
+const upload = multer({ storage: multer.memoryStorage() });
+
+// POST /api/users/avatar -- Upload and set avatar for current user
+router.post('/avatar', authenticateToken, upload.single('avatar'), async (req, res) => {
+  const userId = req.user.id;
+  const file = req.file;
+
+  if (!file) return res.status(400).json({ error: 'No file uploaded.' });
+
+  // Make a unique filename (e.g. userId-timestamp-originalname)
+  const filename = `${userId}-${Date.now()}-${file.originalname.replace(/\s/g, "_")}`;
+
+  // Upload to Supabase Storage (avatar bucket)
+  const { data, error } = await supabase.storage
+    .from('avatar')
+    .upload(filename, file.buffer, {
+      contentType: file.mimetype,
+      upsert: true,
+    });
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  // Get public URL
+  const { data: urlData } = supabase.storage.from('avatar').getPublicUrl(filename);
+
+  // Save public URL to users table (avatar field)
+  try {
+    await pool.query(
+      "UPDATE users SET avatar = $1 WHERE id = $2",
+      [urlData.publicUrl, userId]
+    );
+    res.json({ avatar: urlData.publicUrl });
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+
 module.exports = router;

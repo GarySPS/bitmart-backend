@@ -1,35 +1,17 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 const { authenticateToken } = require('../middleware/auth');
 
-// Ensure uploads dir exists
-if (!fs.existsSync('./uploads')) {
-  fs.mkdirSync('./uploads');
-}
-const storage = multer.diskStorage({
-  destination: './uploads/',
-  filename: (req, file, cb) => {
-    const uniqueName = Date.now() + '-' + file.originalname.replace(/\s/g, "_");
-    cb(null, uniqueName);
-  }
-});
-const upload = multer({ storage });
-
-// --- Create deposit (user, with screenshot upload, JWT protected) ---
+// --- Create deposit (user, supply screenshot URL, JWT protected) ---
 router.post(
   '/',
   authenticateToken,
-  upload.single('screenshot'),
   async (req, res) => {
     const user_id = req.user.id;
-    const { coin, amount, address } = req.body;
-    const screenshot = req.file ? req.file.filename : "";
+    const { coin, amount, address, screenshot } = req.body; // <-- screenshot is now a public URL string
 
-    if (!user_id || !coin || !amount || !address) {
+    if (!user_id || !coin || !amount || !address || !screenshot) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
     try {
@@ -114,7 +96,5 @@ router.post('/:id/status', async (req, res) => {
     res.status(500).json({ error: 'Database error', detail: err.message });
   }
 });
-
-
 
 module.exports = router;
