@@ -24,28 +24,34 @@ const balanceHistoryRoutes = require('./routes/balanceHistory');
 const userRoutes = require('./routes/user');
 const uploadRoute = require('./routes/upload');
 
-
 const app = express();
 
 const allowedOrigins = [
-  'https://novachain-frontend.vercel.app', // old Vercel preview (optional, can remove later)
-  'http://localhost:3000',                 // for local dev
-  'https://novachain.pro',                 // your main domain
-  'https://www.novachain.pro'              // www version
+  'https://novachain-frontend.vercel.app',
+  'http://localhost:3000',
+  'https://novachain.pro',
+  'https://www.novachain.pro',
+  'https://novachain-frontend-garys-projects-331bf079.vercel.app'
 ];
 
-
 app.use(cors({
-  origin: allowedOrigins,
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      return callback(null, true);
+    } else {
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
 }));
 
 app.use(express.json());
 app.use('/api/balance/history', balanceHistoryRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-app.use('/api/auth', require('./routes/auth'));
+app.use('/api/auth', authRoutes);
 app.use('/api/upload', uploadRoute);
-
 
 // --- Multer upload config ---
 if (!fs.existsSync('./uploads')) fs.mkdirSync('./uploads');
@@ -61,18 +67,17 @@ const upload = multer({ storage });
 // --------- ROUTE MOUNTING ---------
 app.use('/api/admin', adminRoutes);
 app.use('/api/trade', tradeRoutes);
-app.use('/api/prices', pricesRoutes);          // GET /api/prices        (top 20 coins)
-app.use('/api/price', pricesRoutes);           // GET /api/price/:symbol (single coin)
+app.use('/api/prices', pricesRoutes);
+app.use('/api/price', pricesRoutes);
 app.use('/api/deposit', depositRoutes);
 app.use('/api/deposits', depositRoutes);
 app.use('/api/withdraw', withdrawalRoutes);
 app.use('/api/withdrawals', withdrawalRoutes);
 app.use('/api/kyc', kycRoutes);
-app.use('/api/profile', profileRoutes);        // GET /api/profile       (user info)
-app.use('/api/balance', balanceRoutes);        // GET /api/balance       (multi-coin balances)
+app.use('/api/profile', profileRoutes);
+app.use('/api/balance', balanceRoutes);
 app.use('/api/convert', convertRoutes);     
-app.use('/api/users', userRoutes);   
-
+app.use('/api/users', userRoutes);
 
 // --------- BASIC ROOT CHECK ---------
 app.get("/", (req, res) => {
@@ -93,7 +98,6 @@ app.get('/api/deposit-addresses', async (req, res) => {
 
 // --- ADMIN: Fetch ALL trades for admin backend ---
 app.get('/api/trades', async (req, res) => {
-  // Only allow admin backend requests!
   if (req.headers['x-admin-token'] !== process.env.ADMIN_API_TOKEN) {
     return res.status(401).json({ error: "Unauthorized" });
   }
@@ -105,12 +109,10 @@ app.get('/api/trades', async (req, res) => {
   }
 });
 
-
 // Catch-all for unknown API routes
 app.use((req, res) => {
   res.status(404).json({ error: 'API route not found' });
 });
-
 
 // --------- START SERVER ---------
 const PORT = process.env.PORT || 5000;
