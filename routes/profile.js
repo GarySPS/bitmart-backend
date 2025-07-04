@@ -6,21 +6,16 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcrypt');
+const { createClient } = require('@supabase/supabase-js');
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
 // Ensure uploads dir exists
 const UPLOADS_DIR = path.join(__dirname, '../uploads');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 
 // Multer storage, limits and file type filter
-const storage = multer.diskStorage({
-  destination: UPLOADS_DIR,
-  filename: (req, file, cb) => {
-    const uniqueName = Date.now() + '-' + file.originalname.replace(/\s/g, "_");
-    cb(null, uniqueName);
-  }
-});
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
   fileFilter: (req, file, cb) => {
     if (!file.mimetype.startsWith("image/")) {
@@ -29,6 +24,7 @@ const upload = multer({
     cb(null, true);
   }
 });
+
 
 // -------- GET /api/profile (JWT-protected) --------
 router.get('/', authenticateToken, async (req, res) => {
@@ -46,11 +42,19 @@ router.get('/', authenticateToken, async (req, res) => {
     );
     const total_usd = Number(balanceRes.rows[0].total_usd) || 0;
 
-    let avatarUrl = row.avatar
-      ? (row.avatar.startsWith('/') || row.avatar.startsWith('http') || row.avatar.startsWith('profile/')
-        ? row.avatar
-        : `/uploads/${row.avatar}`)
-      : "";
+    let avatarUrl = "";
+if (row.avatar) {
+  if (row.avatar.startsWith('http')) {
+    avatarUrl = row.avatar;
+  } else {
+    // Generate public Supabase URL
+    const { data: publicUrlData } = supabase.storage
+      .from('avatar')
+      .getPublicUrl(row.avatar);
+    avatarUrl = publicUrlData.publicUrl;
+  }
+}
+
 
     res.json({
       user: {
@@ -85,44 +89,53 @@ router.post('/avatar', authenticateToken, async (req, res, next) => {
   next();
 });
 
-// 2. Handle multipart upload avatar update
+// 2. Handle multipart upload avatar update (SUPABASE VERSION)
 router.post('/avatar', authenticateToken, upload.single('avatar'), async (req, res) => {
   const userId = req.user.id;
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-  const filename = req.file.filename;
 
   try {
-    // Fetch current avatar filename
+    // Build unique filename for storage
+    const ext = path.extname(req.file.originalname);
+    const supabaseFilename = `${userId}-${Date.now()}${ext}`;
+
+    // Upload file buffer to Supabase Storage "avatar" bucket
+    const { error: uploadError } = await supabase.storage
+      .from('avatar')
+      .upload(supabaseFilename, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: true
+      });
+
+    if (uploadError) {
+      return res.status(500).json({ error: "Failed to upload to Supabase Storage" });
+    }
+
+    // Delete old avatar from Supabase Storage (optional, for cleanup)
     const { rows } = await pool.query("SELECT avatar FROM users WHERE id = $1", [userId]);
     const oldAvatar = rows[0]?.avatar;
+    if (oldAvatar && oldAvatar !== supabaseFilename) {
+      await supabase.storage.from('avatar').remove([oldAvatar]).catch(()=>{});
+    }
 
-    // Update DB
+    // Update DB with new Supabase storage path (just the filename)
     await pool.query(
       "UPDATE users SET avatar = $1 WHERE id = $2",
-      [filename, userId]
+      [supabaseFilename, userId]
     );
 
-    // Delete old avatar from disk if exists, not default, and not current
-    if (
-      oldAvatar &&
-      oldAvatar !== filename &&
-      fs.existsSync(path.join(UPLOADS_DIR, oldAvatar)) &&
-      !["logo192.png", "logo192_new.png"].includes(oldAvatar)
-    ) {
-      fs.unlink(path.join(UPLOADS_DIR, oldAvatar), err => {
-        if (err) console.warn("⚠️ Failed to delete old avatar:", err);
-      });
-    }
+    // Get public URL
+    const { data: publicUrlData } = supabase.storage
+      .from('avatar')
+      .getPublicUrl(supabaseFilename);
 
-    res.json({ success: true, avatar: `/uploads/${filename}` });
+    res.json({ success: true, avatar: publicUrlData.publicUrl });
   } catch (err) {
-    // If multer threw error (fileFilter, fileSize), send nice message
-    if (err instanceof multer.MulterError || err.message) {
-      return res.status(400).json({ error: err.message || "Upload failed" });
-    }
-    res.status(500).json({ error: "Failed to update avatar" });
+    res.status(500).json({ error: err.message || "Failed to update avatar" });
   }
 });
+
+
 
 // -------- POST /api/profile/change-password --------
 router.post('/change-password', authenticateToken, async (req, res) => {
