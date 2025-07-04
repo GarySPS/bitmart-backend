@@ -3,7 +3,8 @@ const router = express.Router();
 const pool = require('../db');
 const multer = require('multer');
 const { authenticateToken } = require('../middleware/auth'); // Adjust path if needed
-const supabase = require('../supabaseClient'); // Make sure this path is correct
+const supabase = require('../utils/supabaseClient');
+
 
 // Multer in-memory storage (not disk)
 const upload = multer({ storage: multer.memoryStorage() });
