@@ -42,19 +42,13 @@ router.get('/', authenticateToken, async (req, res) => {
     );
     const total_usd = Number(balanceRes.rows[0].total_usd) || 0;
 
-    let avatarUrl = "";
-if (row.avatar) {
-  if (row.avatar.startsWith('http')) {
-    avatarUrl = row.avatar;
-  } else {
-    // Generate public Supabase URL
-    const { data: publicUrlData } = supabase.storage
-      .from('avatar')
-      .getPublicUrl(row.avatar);
-    avatarUrl = publicUrlData.publicUrl;
-  }
-}
-
+    let avatarUrl = "/logo192_new.png";
+    if (row.avatar && typeof row.avatar === "string" && row.avatar.length > 0) {
+      // Always serve public URL directly
+      avatarUrl = row.avatar.startsWith("http")
+        ? row.avatar
+        : `https://zgnefojwdijycgcqngke.supabase.co/storage/v1/object/public/avatar/${row.avatar}?t=${Date.now()}`;
+    }
 
     res.json({
       user: {
@@ -62,7 +56,7 @@ if (row.avatar) {
         username: row.username,
         email: row.email,
         balance: total_usd,
-        avatar: avatarUrl,
+        avatar: avatarUrl,   // <--- always a full URL or default!
         referral: row.referral || ""
       }
     });
@@ -71,6 +65,7 @@ if (row.avatar) {
     res.status(500).json({ error: "Database error" });
   }
 });
+
 
 // -------- POST /api/profile/avatar --------
 // 1. Handle JSON Supabase-style avatar update
