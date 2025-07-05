@@ -27,8 +27,8 @@ router.post(
     }
     try {
       // Unique filenames for KYC files
-      const selfieFilename = `kyc/${user_id}-selfie-${Date.now()}-${selfieFile.originalname.replace(/\s/g, "_")}`;
-      const idCardFilename = `kyc/${user_id}-idcard-${Date.now()}-${idCardFile.originalname.replace(/\s/g, "_")}`;
+      const selfieFilename = `${user_id}-selfie-${Date.now()}-${selfieFile.originalname.replace(/\s/g, "_")}`;
+      const idCardFilename = `${user_id}-idcard-${Date.now()}-${idCardFile.originalname.replace(/\s/g, "_")}`;
 
       // Upload selfie to Supabase
       const { error: selfieError } = await supabase.storage.from('kyc').upload(selfieFilename, selfieFile.buffer, {
