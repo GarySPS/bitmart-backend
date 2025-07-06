@@ -23,6 +23,7 @@ router.get('/users', requireAdminApiKey, async (req, res) => {
     const result = await pool.query(
       `SELECT 
         u.id, u.username, u.email, u.verified, u.kyc_status, u.kyc_selfie, u.kyc_id_card,
+        u.created_at,                  -- <--- ADD THIS LINE!
         tm.mode AS trade_mode
        FROM users u
        LEFT JOIN user_trade_modes tm ON u.id = tm.user_id
@@ -33,6 +34,7 @@ router.get('/users', requireAdminApiKey, async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch users' });
   }
 });
+
 
 // --- Approve/Reject KYC (admin) ---
 router.post('/kyc-status', requireAdminApiKey, async (req, res) => {
