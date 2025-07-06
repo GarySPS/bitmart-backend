@@ -63,11 +63,11 @@ router.post('/password', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "New password must be different from the current password" });
     }
 
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
     await pool.query(
-      "UPDATE users SET password = $1 WHERE id = $2",
-      [hashedPassword, userId]
-    );
+  "UPDATE users SET password = $1 WHERE id = $2",
+  [newPassword, userId]
+);
+
 
     res.json({ message: "Password changed successfully" });
   } catch (err) {
