@@ -38,9 +38,16 @@ router.post("/set-trade-mode", async (req, res) => {
 // ---- POST /api/trade ----
 router.post("/", async (req, res) => {
   try {
-    const { user_id, direction, amount, duration } = req.body;
+    // Accept symbol from frontend, fallback to BTC
+    let { user_id, direction, amount, duration, symbol } = req.body;
     if (!user_id || !direction || !amount || !duration)
       return res.status(400).json({ error: "Missing trade data" });
+
+    // --- Allowed coins ---
+    const ALLOWED_COINS = ["BTC", "ETH", "SOL", "XRP", "TON"];
+    symbol = (symbol || "BTC").toUpperCase();
+    if (!ALLOWED_COINS.includes(symbol))
+      return res.status(400).json({ error: "Invalid coin symbol" });
 
     // Validate duration and amount
     const safeDuration = Math.max(5, Math.min(120, Number(duration))); // clamp 5-120
@@ -59,33 +66,35 @@ router.post("/", async (req, res) => {
     if (!usdt || parseFloat(usdt.balance) < safeAmount)
       return res.status(400).json({ error: "Insufficient USDT" });
 
-    // 1. Get current BTC price (fail-safe fallback)
+    // --- 1. Get current price for selected coin (with fallback) ---
     let start_price = 0;
     try {
-      const priceData = await cmc.getQuotes({ symbol: "BTC" });
-      start_price = parseFloat(priceData.data.BTC.quote.USD.price);
+      const priceData = await cmc.getQuotes({ symbol });
+      start_price = parseFloat(priceData.data[symbol].quote.USD.price);
     } catch {
-      start_price = 65000; // fallback demo
+      // fallback demo prices
+      const fallback = { BTC: 65000, ETH: 3400, SOL: 140, XRP: 0.6, TON: 7.0 };
+      start_price = fallback[symbol] || 1;
     }
 
-    // 2. Deduct invest amount immediately
+    // --- 2. Deduct invest amount immediately ---
     await pool.query(
       "UPDATE user_balances SET balance = balance - $1 WHERE user_id = $2 AND coin = 'USDT'",
       [safeAmount, user_id]
     );
 
-    // 3. Save as pending trade
+    // --- 3. Save as pending trade ---
     const timestamp = new Date().toISOString();
     const insertTradeRes = await pool.query(
       `INSERT INTO trades 
-        (user_id, direction, amount, duration, start_price, result, profit, result_price, timestamp)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        (user_id, symbol, direction, amount, duration, start_price, result, profit, result_price, timestamp)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id`,
-      [user.id, direction, safeAmount, safeDuration, start_price, "PENDING", 0, null, timestamp]
+      [user.id, symbol, direction, safeAmount, safeDuration, start_price, "PENDING", 0, null, timestamp]
     );
     const trade_id = insertTradeRes.rows[0].id;
     
-    // 4. Simulate trade result after {duration} seconds (auto or admin controlled)
+    // --- 4. Simulate trade result after {duration} seconds ---
     setTimeout(async () => {
       try {
         // 1. Check per-user and global trade mode
@@ -116,18 +125,15 @@ router.post("/", async (req, res) => {
           }
         }
 
-        // 3. Generate fake close price
+        // 3. Generate fake close price (within 0.3% volatility for realism)
         let result_price = start_price;
+        let change = (Math.random() * 0.006 - 0.003) * start_price; // ±0.3%
         if (result === "WIN") {
-          result_price = direction === "BUY"
-            ? start_price + Math.random() * 10
-            : start_price - Math.random() * 10;
+          result_price = direction === "BUY" ? start_price + Math.abs(change) : start_price - Math.abs(change);
         } else {
-          result_price = direction === "BUY"
-            ? start_price - Math.random() * 10
-            : start_price + Math.random() * 10;
+          result_price = direction === "BUY" ? start_price - Math.abs(change) : start_price + Math.abs(change);
         }
-        result_price = Number(result_price.toFixed(2));
+        result_price = Number(result_price.toFixed(symbol === "XRP" ? 4 : symbol === "TON" ? 4 : 2));
 
         // 4. Update trade record
         await pool.query(
@@ -163,6 +169,7 @@ router.post("/", async (req, res) => {
       status: "pending",
       trade_id,
       start_price,
+      symbol,
       direction,
       amount: safeAmount,
       duration: safeDuration,
