@@ -343,6 +343,20 @@ router.post('/deposit-addresses', requireAdminApiKey, depositQrUpload.single('qr
   }
 });
 
+// --- Get ALL user win/lose trade modes (admin) ---
+router.get('/user-win-modes', requireAdminApiKey, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.username, tm.mode
+       FROM users u
+       LEFT JOIN user_trade_modes tm ON u.id = tm.user_id
+       WHERE tm.mode IS NOT NULL`
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: "DB error: " + err.message });
+  }
+});
 
 
 module.exports = router;
