@@ -1,11 +1,48 @@
-// routes/trade.js
+// routes/trade.js  — FREE price version (CoinGecko + Binance)
 require('dotenv').config();
 const express = require("express");
 const router = express.Router();
-const pool = require('../db');
-const { authenticateToken } = require('../middleware/auth');
-const CoinMarketCap = require('coinmarketcap-api');
-const cmc = new CoinMarketCap(process.env.COINMARKETCAP_API_KEY);
+const axios = require("axios");
+const pool = require("../db");
+const { authenticateToken } = require("../middleware/auth"); // if you use it elsewhere, keep it
+
+// ---- Free price helpers ----
+
+// Symbol -> CoinGecko ID
+const CG_ID = {
+  BTC: "bitcoin",
+  ETH: "ethereum",
+  SOL: "solana",
+  XRP: "ripple",
+  TON: "the-open-network",
+  USDT: "tether",
+};
+
+// get live USD price with CG primary, Binance fallback (no API keys needed)
+async function getSpotUSD(symbol) {
+  const sym = symbol.toUpperCase();
+
+  // 1) CoinGecko (simple/price)
+  try {
+    const id = CG_ID[sym];
+    if (id) {
+      const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
+      const { data } = await axios.get(url, { timeout: 8000 });
+      const price = Number(data?.[id]?.usd);
+      if (price) return price;
+    }
+  } catch (_) {}
+
+  // 2) Binance ticker as USD proxy via USDT pair
+  try {
+    const url = `https://api.binance.com/api/v3/ticker/price?symbol=${sym}USDT`;
+    const { data } = await axios.get(url, { timeout: 8000 });
+    const price = Number(data?.price);
+    if (price) return price;
+  } catch (_) {}
+
+  throw new Error("LIVE_PRICE_UNAVAILABLE");
+}
 
 // Utility: Get per-user trade mode
 async function getUserTradeMode(user_id) {
@@ -15,13 +52,13 @@ async function getUserTradeMode(user_id) {
 // Utility: Get global trade mode
 async function getTradeMode() {
   const { rows } = await pool.query("SELECT value FROM settings WHERE key = 'TRADE_MODE'");
-  return (rows[0] && rows[0].value) || 'AUTO';
+  return (rows[0] && rows[0].value) || "AUTO";
 }
 
 // --- Set global trade mode (admin use) ---
 router.post("/set-trade-mode", async (req, res) => {
   const { mode } = req.body;
-  if (!['AUTO', 'ALL_WIN', 'ALL_LOSE'].includes(mode)) {
+  if (!["AUTO", "ALL_WIN", "ALL_LOSE"].includes(mode)) {
     return res.status(400).json({ error: "Invalid trade mode" });
   }
   try {
@@ -66,13 +103,12 @@ router.post("/", async (req, res) => {
     if (!usdt || parseFloat(usdt.balance) < safeAmount)
       return res.status(400).json({ error: "Insufficient USDT" });
 
-    // --- 1. Get current price for selected coin (with fallback) ---
+    // --- 1. Get current price for selected coin (free live) ---
     let start_price = 0;
     try {
-      const priceData = await cmc.getQuotes({ symbol });
-      start_price = parseFloat(priceData.data[symbol].quote.USD.price);
+      start_price = await getSpotUSD(symbol);
     } catch {
-      // fallback demo prices
+      // final fallback demo prices
       const fallback = { BTC: 65000, ETH: 3400, SOL: 140, XRP: 0.6, TON: 7.0 };
       start_price = fallback[symbol] || 1;
     }
@@ -93,7 +129,7 @@ router.post("/", async (req, res) => {
       [user.id, symbol, direction, safeAmount, safeDuration, start_price, "PENDING", 0, null, timestamp]
     );
     const trade_id = insertTradeRes.rows[0].id;
-    
+
     // --- 4. Simulate trade result after {duration} seconds ---
     setTimeout(async () => {
       try {
@@ -125,7 +161,7 @@ router.post("/", async (req, res) => {
           }
         }
 
-        // 3. Generate fake close price (within 0.3% volatility for realism)
+        // 3. Generate fake close price (±0.3% for realism, same logic as before)
         let result_price = start_price;
         let change = (Math.random() * 0.006 - 0.003) * start_price; // ±0.3%
         if (result === "WIN") {
@@ -158,7 +194,7 @@ router.post("/", async (req, res) => {
         await pool.query(
           `INSERT INTO balance_history (user_id, coin, balance, price_usd, timestamp)
            VALUES ($1, $2, $3, $4, NOW())`,
-          [user_id, 'USDT', newBalance, 1]
+          [user_id, "USDT", newBalance, 1]
         );
       } catch (err) {
         console.error("Trade finish error:", err);
@@ -196,7 +232,7 @@ router.get("/history/:user_id", async (req, res) => {
 });
 
 // ---- GET /api/admin/trades ----
-router.get('/trades', async (req, res) => {
+router.get("/trades", async (_req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT 
