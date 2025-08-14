@@ -39,25 +39,40 @@ const CG_ID = {
   USDT: "tether",
 };
 
-// live USD price: CoinGecko primary, Binance fallback
+// live USD price with multiple fallbacks (CoinGecko → Binance → Coinbase)
 async function getSpotUSD(symbol) {
-  const sym = symbol.toUpperCase();
+  const sym = String(symbol || "").toUpperCase();
 
+  // ----- CoinGecko -----
   try {
-    const id = CG_ID[sym];
+    let id = CG_ID[sym];
+    // TON sometimes listed as "toncoin"
+    if (!id && sym === "TON") id = "toncoin";
     if (id) {
       const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
-      const { data } = await axios.get(url, { timeout: 8000 });
+      const { data } = await axios.get(url, { timeout: 7000 });
       const price = Number(data?.[id]?.usd);
-      if (price) return price;
+      if (isFinite(price) && price > 0) return price;
     }
   } catch {}
 
+  // ----- Binance -----
   try {
     const url = `https://api.binance.com/api/v3/ticker/price?symbol=${sym}USDT`;
-    const { data } = await axios.get(url, { timeout: 8000 });
+    const { data } = await axios.get(url, { timeout: 7000 });
     const price = Number(data?.price);
-    if (price) return price;
+    if (isFinite(price) && price > 0) return price;
+  } catch {}
+
+  // ----- Coinbase -----
+  try {
+    const url = `https://api.coinbase.com/v2/prices/${sym}-USD/spot`;
+    const { data } = await axios.get(url, {
+      timeout: 7000,
+      headers: { "CB-VERSION": "2023-01-01" },
+    });
+    const price = Number(data?.data?.amount);
+    if (isFinite(price) && price > 0) return price;
   } catch {}
 
   throw new Error("LIVE_PRICE_UNAVAILABLE");
@@ -143,14 +158,29 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "Insufficient USDT" });
     }
 
-    // 1) Real entry price
-    let start_price = 0;
-    try {
-      start_price = await getSpotUSD(normSymbol);
-    } catch {
-      const fallback = { BTC: 65000, ETH: 3400, SOL: 140, XRP: 0.6, TON: 7.0 };
-      start_price = fallback[normSymbol] || 1;
-    }
+// (optional) client-side price from the UI we can trust as a last resort
+const client_price = Number(req.body.client_price);
+
+let start_price = NaN;
+try {
+  start_price = await getSpotUSD(normSymbol);
+} catch { /* fall through */ }
+
+// If server fetch failed, but client provided a sane price, use it
+if (!isFinite(start_price) || start_price <= 0) {
+  if (isFinite(client_price) && client_price > 0) {
+    start_price = client_price;
+  } else {
+    // final hard fallback so trades never break
+    const fallback = { BTC: 65000, ETH: 3400, SOL: 140, XRP: 0.6, TON: 7.0 };
+    start_price = fallback[normSymbol] || 1;
+  }
+}
+
+// normalize decimals for display consistency
+const entryDecimals = (normSymbol === "XRP" || normSymbol === "TON") ? 4 : 2;
+start_price = Number(start_price.toFixed(entryDecimals));
+
 
     // 2) Deduct stake
     await pool.query(
