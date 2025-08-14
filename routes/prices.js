@@ -1,8 +1,5 @@
-// routes/prices.js — FREE version (CoinGecko + Binance)
-// Response shapes preserved:
-// 1) GET /prices                 -> { data: [...], prices: { SYM: price, ... } }
-// 2) GET /prices/:symbol         -> { symbol, price }
-// 3) GET /prices/chart/btcusdt   -> { candles: [{time,open,high,low,close}] }
+// routes/prices.js — resilient free tier (CoinGecko + Binance + stale cache)
+// Response shapes preserved.
 
 const express = require("express");
 const axios = require("axios");
@@ -35,19 +32,22 @@ function normalizeSymbol(input) {
   return s;
 }
 
-// tiny in-memory cache (reduce free-tier rate hits)
-let cacheList = { t: 0, data: [], prices: {} };
-const CACHE_MS = 10_000;
+/** ---------------- In‑memory caches ---------------- */
+let cacheList = { t: 0, data: [], prices: {} }; // for GET /prices
+const LIST_REFRESH_MS = 10_000;                 // normal freshness window
+const LIST_STALE_OK_MS = 5 * 60_000;            // up to 5 min we’ll still serve stale instead of empty
 
-/* -------------------- CHART (put before /:symbol!) -------------------- */
-// --- GET /prices/chart/btcusdt (candles for PremiumChart) ---
+// per‑symbol cache for GET /prices/:symbol
+const symbolCache = {}; // { BTC: { t: ms, price: number }, ... }
+const SYMBOL_STALE_OK_MS = 5 * 60_000;
+
+/* -------------------- CHART -------------------- */
 router.get("/chart/btcusdt", async (_req, res) => {
   try {
-    // Binance 15m klines, last ~2 days (192 points)
     const url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=192";
     const { data } = await axios.get(url, { timeout: 8000 });
     const candles = data.map((k) => ({
-      time: Math.floor(k[0] / 1000), // open time (sec)
+      time: Math.floor(k[0] / 1000),
       open: Number(k[1]),
       high: Number(k[2]),
       low: Number(k[3]),
@@ -60,15 +60,15 @@ router.get("/chart/btcusdt", async (_req, res) => {
 });
 
 /* -------------------- LIST -------------------- */
-// --- GET /prices (Dashboard/Wallet list) ---
 router.get("/", async (_req, res) => {
   const now = Date.now();
-  if (now - cacheList.t < CACHE_MS && cacheList.data.length) {
+
+  // serve hot cache
+  if (now - cacheList.t < LIST_REFRESH_MS && cacheList.data.length) {
     return res.json({ data: cacheList.data, prices: cacheList.prices });
   }
 
   try {
-    // CoinGecko top-by-market-cap (free, no key)
     const perPage = 50;
     const url =
       `https://api.coingecko.com/api/v3/coins/markets` +
@@ -76,9 +76,8 @@ router.get("/", async (_req, res) => {
 
     const { data: items } = await axios.get(url, { timeout: 8000 });
 
-    // Map to CMC-like shape expected by your frontend
     const data = items.map((c) => ({
-      id: c.id, // e.g., "bitcoin"
+      id: c.id,
       name: c.name,
       symbol: (c.symbol || "").toUpperCase(),
       quote: {
@@ -91,78 +90,100 @@ router.get("/", async (_req, res) => {
       },
     }));
 
-    // Build simple prices map for wallet usage
     const prices = {};
     data.forEach((c) => (prices[c.symbol] = c.quote.USD.price));
 
+    // update caches
     cacheList = { t: now, data, prices };
-    res.json({ data, prices });
-} catch {
-  const allowStatic = process.env.ALLOW_STATIC_FALLBACK === "1"; // opt-in only
-  if (allowStatic) {
-    const STATIC_PRICES = { BTC: 107719.98, ETH: 4555.07, SOL: 143.66, XRP: 3, TON: 3.34, USDT: 1 };
-    const prices = {};
-    SUPPORTED_COINS.forEach((s) => (prices[s] = STATIC_PRICES[s]));
-    return res.json({ data: [], prices, fallback: "static" });
+    Object.entries(prices).forEach(([sym, price]) => {
+      symbolCache[sym] = { t: now, price };
+    });
+
+    return res.json({ data, prices });
+  } catch {
+    // On failure, prefer returning stale cache (realistic UX) rather than empty data.
+    if (cacheList.data.length && now - cacheList.t <= LIST_STALE_OK_MS) {
+      return res.json({ data: cacheList.data, prices: cacheList.prices, stale: true });
+    }
+    // Optional: allow static fallback if explicitly enabled
+    const allowStatic = process.env.ALLOW_STATIC_FALLBACK === "1";
+    if (allowStatic) {
+      const STATIC_PRICES = { BTC: 107719.98, ETH: 4555.07, SOL: 143.66, XRP: 3, TON: 3.34, USDT: 1 };
+      const prices = {};
+      SUPPORTED_COINS.forEach((s) => (prices[s] = STATIC_PRICES[s]));
+      return res.json({ data: [], prices, fallback: "static" });
+    }
+    return res.status(503).json({ data: [], prices: {}, error: "LIVE_PRICE_UNAVAILABLE" });
   }
-  // Prefer to be honest if live price fetch fails
-  return res.status(503).json({ data: [], prices: {}, error: "LIVE_PRICE_UNAVAILABLE" });
-}
 });
 
-/* -------------------- SINGLE (real-time, no stale constants unless allowed) -------------------- */
-// GET /prices/:symbol  -> { symbol, price }
+/* -------------------- SINGLE -------------------- */
 router.get("/:symbol", async (req, res) => {
   const raw = req.params.symbol;
   const symbol = normalizeSymbol(raw);
-  const allowStatic = process.env.ALLOW_STATIC_FALLBACK === "1"; // opt-in only
+  const allowStatic = process.env.ALLOW_STATIC_FALLBACK === "1";
+  const now = Date.now();
 
-// 1) CoinGecko primary (TON tries both ids)
-try {
-  const idsToTry =
-    symbol === "TON"
-      ? ["toncoin", "the-open-network"]
-      : [CG_ID[symbol]].filter(Boolean);
-
-  for (const id of idsToTry) {
-    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
-    const { data } = await axios.get(url, { timeout: 5000 });
-    const price = Number(data?.[id]?.usd);
-    if (isFinite(price) && price > 0) {
-      return res.json({ symbol, price });
-    }
+  // If we have a very recent symbol price, serve it immediately.
+  if (symbolCache[symbol] && now - symbolCache[symbol].t < LIST_REFRESH_MS) {
+    return res.json({ symbol, price: symbolCache[symbol].price });
   }
-} catch {}
 
+  // 1) CoinGecko primary
+  try {
+    const idsToTry =
+      symbol === "TON"
+        ? ["toncoin", "the-open-network"]
+        : [CG_ID[symbol]].filter(Boolean);
 
-  // 2) Binance fallback (USDT proxy for USD)
+    for (const id of idsToTry) {
+      const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
+      const { data } = await axios.get(url, { timeout: 5000 });
+      const price = Number(data?.[id]?.usd);
+      if (isFinite(price) && price > 0) {
+        symbolCache[symbol] = { t: now, price };
+        return res.json({ symbol, price });
+      }
+    }
+  } catch {}
+
+  // 2) Binance fallback
   try {
     const url = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}USDT`;
     const { data } = await axios.get(url, { timeout: 5000 });
     const price = Number(data?.price);
-    if (isFinite(price) && price > 0) return res.json({ symbol, price });
+    if (isFinite(price) && price > 0) {
+      symbolCache[symbol] = { t: now, price };
+      return res.json({ symbol, price });
+    }
   } catch {}
 
-  // 3) Coinbase fallback (USD spot)
+  // 3) Coinbase fallback
   try {
     const url = `https://api.coinbase.com/v2/prices/${symbol}-USD/spot`;
-    const { data } = await axios.get(url, {
-      timeout: 5000,
-      headers: { "CB-VERSION": "2023-01-01" },
-    });
+    const { data } = await axios.get(url, { timeout: 5000, headers: { "CB-VERSION": "2023-01-01" } });
     const price = Number(data?.data?.amount);
-    if (isFinite(price) && price > 0) return res.json({ symbol, price });
+    if (isFinite(price) && price > 0) {
+      symbolCache[symbol] = { t: now, price };
+      return res.json({ symbol, price });
+    }
   } catch {}
 
-  // 4) Optional static fallback (only if explicitly enabled)
+  // 4) Stale cache if we have it (up to 5 min)
+  if (symbolCache[symbol] && now - symbolCache[symbol].t <= SYMBOL_STALE_OK_MS) {
+    return res.json({ symbol, price: symbolCache[symbol].price, stale: true });
+  }
+  if (cacheList.prices[symbol]) {
+    return res.json({ symbol, price: cacheList.prices[symbol], stale: true });
+  }
+
+  // 5) Optional static fallback
   if (allowStatic) {
     const STATIC_PRICES = { BTC: 107419.98, ETH: 2453.07, SOL: 143.66, XRP: 0.6, TON: 7.0, USDT: 1 };
     if (STATIC_PRICES[symbol]) return res.json({ symbol, price: STATIC_PRICES[symbol] });
   }
 
-  // If we got here, we couldn't fetch live price—signal that to the client instead of lying
   return res.status(503).json({ error: "LIVE_PRICE_UNAVAILABLE" });
 });
-
 
 module.exports = router;
