@@ -17,7 +17,7 @@ const CG_ID = {
   USDT: "tether",
   SOL: "solana",
   XRP: "ripple",
-  TON: "the-open-network",
+  TON: "toncoin",
   BNB: "binancecoin",
   ADA: "cardano",
   DOGE: "dogecoin",
@@ -113,17 +113,23 @@ router.get("/:symbol", async (req, res) => {
   const symbol = normalizeSymbol(raw);
   const allowStatic = process.env.ALLOW_STATIC_FALLBACK === "1"; // opt-in only
 
-  // 1) CoinGecko primary (with TON fallback id)
-  try {
-    let id = CG_ID[symbol];
-    if (!id && symbol === "TON") id = "toncoin"; // some endpoints list TON as "toncoin"
-    if (id) {
-      const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
-      const { data } = await axios.get(url, { timeout: 5000 });
-      const price = Number(data?.[id]?.usd);
-      if (isFinite(price) && price > 0) return res.json({ symbol, price });
+// 1) CoinGecko primary (TON tries both ids)
+try {
+  const idsToTry =
+    symbol === "TON"
+      ? ["toncoin", "the-open-network"]
+      : [CG_ID[symbol]].filter(Boolean);
+
+  for (const id of idsToTry) {
+    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
+    const { data } = await axios.get(url, { timeout: 5000 });
+    const price = Number(data?.[id]?.usd);
+    if (isFinite(price) && price > 0) {
+      return res.json({ symbol, price });
     }
-  } catch {}
+  }
+} catch {}
+
 
   // 2) Binance fallback (USDT proxy for USD)
   try {
