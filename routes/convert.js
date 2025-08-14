@@ -1,44 +1,90 @@
-// routes/convert.js — Free live prices version
+// routes/convert.js — Free live prices version (robust, TON alias, 3 fallbacks)
 const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 const { authenticateToken } = require("../middleware/auth");
 const axios = require("axios");
 
-// Symbol -> CoinGecko ID
+// Symbol -> CoinGecko ID (primary)
 const CG_ID = {
   BTC: "bitcoin",
   ETH: "ethereum",
   SOL: "solana",
   XRP: "ripple",
-  TON: "the-open-network",
+  TON: "the-open-network", // some endpoints still use this, we add a toncoin fallback below
   USDT: "tether",
 };
 
-// Get live USD price for symbol (CoinGecko primary, Binance fallback)
-async function getSpotUSD(symbol) {
-  const sym = symbol.toUpperCase();
+// normalize inputs like "ton/usdt", "TONUSDT", " ton - usd "
+function normalizeSymbol(input) {
+  if (!input) return "";
+  let s = String(input).trim().toUpperCase().replace(/\s+/g, "");
+  if (s.includes("/")) s = s.split("/")[0];
+  if (s.includes("-")) s = s.split("-")[0];
+  if (s.endsWith("USDT")) s = s.slice(0, -4);
+  if (s.endsWith("USD")) s = s.slice(0, -3);
+  return s;
+}
 
-  // 1) CoinGecko
+// unified live USD price with 3 fallbacks (CoinGecko → Binance → Coinbase)
+async function getSpotUSD(symbol) {
+  const sym = normalizeSymbol(symbol);
+
+  // 1) CoinGecko (with TON alias fallback to "toncoin")
   try {
-    const id = CG_ID[sym];
-    if (id) {
+    let id = CG_ID[sym];
+    if (!id && sym === "TON") id = "toncoin"; // alias
+    if (id === "the-open-network") {
+      // try the canonical id first
+      try {
+        const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
+        const { data } = await axios.get(url, { timeout: 8000 });
+        const p = Number(data?.[id]?.usd);
+        if (isFinite(p) && p > 0) return p;
+      } catch {
+        /* fall through to alias */
+      }
+      // alias attempt
+      const alias = "toncoin";
+      const url2 = `https://api.coingecko.com/api/v3/simple/price?ids=${alias}&vs_currencies=usd`;
+      const { data: d2 } = await axios.get(url2, { timeout: 8000 });
+      const p2 = Number(d2?.[alias]?.usd);
+      if (isFinite(p2) && p2 > 0) return p2;
+    } else if (id) {
       const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
       const { data } = await axios.get(url, { timeout: 8000 });
-      const price = Number(data?.[id]?.usd);
-      if (price) return price;
+      const p = Number(data?.[id]?.usd);
+      if (isFinite(p) && p > 0) return p;
     }
-  } catch (_) {}
+  } catch {}
 
-  // 2) Binance (via USDT)
+  // 2) Binance (USDT proxy)
   try {
     const url = `https://api.binance.com/api/v3/ticker/price?symbol=${sym}USDT`;
     const { data } = await axios.get(url, { timeout: 8000 });
-    const price = Number(data?.price);
-    if (price) return price;
-  } catch (_) {}
+    const p = Number(data?.price);
+    if (isFinite(p) && p > 0) return p;
+  } catch {}
+
+  // 3) Coinbase (USD spot)
+  try {
+    const url = `https://api.coinbase.com/v2/prices/${sym}-USD/spot`;
+    const { data } = await axios.get(url, {
+      timeout: 8000,
+      headers: { "CB-VERSION": "2023-01-01" },
+    });
+    const p = Number(data?.data?.amount);
+    if (isFinite(p) && p > 0) return p;
+  } catch {}
 
   throw new Error("PRICE_UNAVAILABLE");
+}
+
+// simple decimals by coin for display/storage (feel free to adjust)
+function coinDecimals(sym) {
+  if (sym === "USDT") return 2;
+  if (sym === "XRP" || sym === "TON") return 4;
+  return 8; // BTC/ETH/SOL etc.
 }
 
 router.post("/", authenticateToken, async (req, res) => {
@@ -46,66 +92,79 @@ router.post("/", authenticateToken, async (req, res) => {
     const { from_coin, to_coin, amount } = req.body;
     const user_id = req.user.id;
 
-    const fromSym = from_coin?.toUpperCase();
-    const toSym = to_coin?.toUpperCase();
+    const fromSym = normalizeSymbol(from_coin);
+    const toSym = normalizeSymbol(to_coin);
+    const amt = Number(amount);
 
-    if (!CG_ID[fromSym] || !CG_ID[toSym]) {
-      return res.status(400).json({ error: "Invalid coin" });
+    if (!fromSym || !toSym || !isFinite(amt) || amt <= 0) {
+      return res.status(400).json({ error: "Invalid input" });
     }
+
+    // only allow USDT <-> coin (same as before)
     if (fromSym === toSym) {
       return res.status(400).json({ error: "Cannot convert to same coin" });
     }
-
-    let rate = 1;
-    let received = 0;
-
-    // USDT -> Other coin
-    if (fromSym === "USDT" && toSym !== "USDT") {
-      rate = await getSpotUSD(toSym);
-      received = parseFloat(amount) / rate;
+    const allowed = ["BTC", "ETH", "SOL", "XRP", "TON", "USDT"];
+    if (!allowed.includes(fromSym) || !allowed.includes(toSym)) {
+      return res.status(400).json({ error: "Invalid coin" });
     }
-    // Other coin -> USDT
-    else if (toSym === "USDT" && fromSym !== "USDT") {
-      rate = await getSpotUSD(fromSym);
-      received = parseFloat(amount) * rate;
-    }
-    // Disallow other swaps
-    else {
-      return res
-        .status(400)
-        .json({ error: "Only USDT to coin or coin to USDT swaps allowed." });
+    if (!(fromSym === "USDT" || toSym === "USDT")) {
+      return res.status(400).json({ error: "Only USDT <-> coin conversions allowed." });
     }
 
-    // Check user has enough balance
-    const balRes = await pool.query(
+    // live rate (USD per coin)
+    let rateUSD;
+    if (fromSym === "USDT") {
+      // buying the target coin with USDT → need target coin USD price
+      rateUSD = await getSpotUSD(toSym);
+    } else {
+      // selling a coin to USDT → need that coin USD price
+      rateUSD = await getSpotUSD(fromSym);
+    }
+
+    // compute received
+    let received;
+    if (fromSym === "USDT") {
+      // USDT -> coin
+      received = amt / rateUSD;
+      received = Number(received.toFixed(coinDecimals(toSym)));
+    } else {
+      // coin -> USDT
+      received = amt * rateUSD;
+      received = Number(received.toFixed(coinDecimals("USDT")));
+    }
+
+    // balance check
+    const { rows } = await pool.query(
       "SELECT balance FROM user_balances WHERE user_id = $1 AND coin = $2",
       [user_id, fromSym]
     );
-    const balance = parseFloat(balRes.rows[0]?.balance || 0);
-    if (balance < parseFloat(amount)) {
+    const balance = Number(rows[0]?.balance || 0);
+    if (!isFinite(balance) || balance < amt) {
       return res.status(400).json({ error: "Insufficient balance." });
     }
 
-    // Update balances (subtract from_coin, add to_coin)
+    // update balances (simple two updates; wrap in transaction if you want strict atomicity)
     await pool.query(
       "UPDATE user_balances SET balance = balance - $1 WHERE user_id = $2 AND coin = $3",
-      [amount, user_id, fromSym]
+      [amt, user_id, fromSym]
     );
     await pool.query(
       `INSERT INTO user_balances (user_id, coin, balance)
        VALUES ($1, $2, $3)
-       ON CONFLICT (user_id, coin) DO UPDATE SET balance = user_balances.balance + $3`,
+       ON CONFLICT (user_id, coin)
+       DO UPDATE SET balance = user_balances.balance + EXCLUDED.balance`,
       [user_id, toSym, received]
     );
 
-    // Record conversion
+    // record conversion
     await pool.query(
       `INSERT INTO conversions (user_id, from_coin, to_coin, amount, received, rate)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [user_id, fromSym, toSym, amount, received, rate]
+      [user_id, fromSym, toSym, amt, received, rateUSD]
     );
 
-    res.json({ success: true, received, rate });
+    res.json({ success: true, received, rate: rateUSD });
   } catch (err) {
     console.error("Convert error:", err.message || err);
     res.status(500).json({ error: "Conversion failed." });
