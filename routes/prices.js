@@ -1,8 +1,8 @@
 // routes/prices.js — FREE version (CoinGecko + Binance)
-// Keeps your existing response shapes:
-// 1) GET /prices        -> { data: [...], prices: { SYM: price, ... } }
-// 2) GET /prices/:symbol -> { symbol, price }
-// 3) GET /prices/chart/btcusdt -> { candles: [{time,open,high,low,close}] }
+// Response shapes preserved:
+// 1) GET /prices                 -> { data: [...], prices: { SYM: price, ... } }
+// 2) GET /prices/:symbol         -> { symbol, price }
+// 3) GET /prices/chart/btcusdt   -> { candles: [{time,open,high,low,close}] }
 
 const express = require("express");
 const axios = require("axios");
@@ -25,10 +25,41 @@ const CG_ID = {
   MATIC: "matic-network",
 };
 
+function normalizeSymbol(input) {
+  if (!input) return "";
+  let s = String(input).trim().toUpperCase().replace(/\s+/g, "");
+  if (s.includes("/")) s = s.split("/")[0];
+  if (s.includes("-")) s = s.split("-")[0];
+  if (s.endsWith("USDT")) s = s.slice(0, -4);
+  if (s.endsWith("USD")) s = s.slice(0, -3);
+  return s;
+}
+
 // tiny in-memory cache (reduce free-tier rate hits)
 let cacheList = { t: 0, data: [], prices: {} };
 const CACHE_MS = 10_000;
 
+/* -------------------- CHART (put before /:symbol!) -------------------- */
+// --- GET /prices/chart/btcusdt (candles for PremiumChart) ---
+router.get("/chart/btcusdt", async (_req, res) => {
+  try {
+    // Binance 15m klines, last ~2 days (192 points)
+    const url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=192";
+    const { data } = await axios.get(url, { timeout: 8000 });
+    const candles = data.map((k) => ({
+      time: Math.floor(k[0] / 1000), // open time (sec)
+      open: Number(k[1]),
+      high: Number(k[2]),
+      low: Number(k[3]),
+      close: Number(k[4]),
+    }));
+    res.json({ candles });
+  } catch {
+    res.json({ candles: [] });
+  }
+});
+
+/* -------------------- LIST -------------------- */
 // --- GET /prices (Dashboard/Wallet list) ---
 router.get("/", async (_req, res) => {
   const now = Date.now();
@@ -47,7 +78,7 @@ router.get("/", async (_req, res) => {
 
     // Map to CMC-like shape expected by your frontend
     const data = items.map((c) => ({
-      id: c.id, // string ID (e.g., "bitcoin")
+      id: c.id, // e.g., "bitcoin"
       name: c.name,
       symbol: (c.symbol || "").toUpperCase(),
       quote: {
@@ -66,25 +97,20 @@ router.get("/", async (_req, res) => {
 
     cacheList = { t: now, data, prices };
     res.json({ data, prices });
-  } catch (error) {
-    // your original static fallback
-    const STATIC_PRICES = {
-      BTC: 107419.98,
-      ETH: 2453.07,
-      SOL: 143.66,
-      XRP: 2.17,
-      TON: 6.34,
-      USDT: 1,
-    };
+  } catch {
+    // static fallback (very rare)
+    const STATIC_PRICES = { BTC: 107419.98, ETH: 2453.07, SOL: 143.66, XRP: 2.17, TON: 6.34, USDT: 1 };
     const prices = {};
     SUPPORTED_COINS.forEach((s) => (prices[s] = STATIC_PRICES[s]));
     res.json({ data: [], prices });
   }
 });
 
+/* -------------------- SINGLE -------------------- */
 // --- GET /prices/:symbol (Trade page single price) ---
 router.get("/:symbol", async (req, res) => {
-  const symbol = req.params.symbol.toUpperCase();
+  const raw = req.params.symbol;
+  const symbol = normalizeSymbol(raw);
 
   // 1) CoinGecko primary
   try {
@@ -95,9 +121,7 @@ router.get("/:symbol", async (req, res) => {
       const price = Number(data?.[id]?.usd);
       if (price) return res.json({ symbol, price });
     }
-  } catch (_) {
-    // continue to fallback
-  }
+  } catch {}
 
   // 2) Binance fallback (USDT proxy for USD)
   try {
@@ -105,43 +129,13 @@ router.get("/:symbol", async (req, res) => {
     const { data } = await axios.get(url, { timeout: 8000 });
     const price = Number(data?.price);
     if (price) return res.json({ symbol, price });
-  } catch (_) {
-    // continue to fallback
-  }
+  } catch {}
 
-  // 3) Final static fallback (same as your original)
-  const STATIC_PRICES = {
-    BTC: 107419.98,
-    ETH: 2453.07,
-    SOL: 143.66,
-    XRP: 2.17,
-    TON: 6.34,
-    USDT: 1,
-  };
-  if (STATIC_PRICES[symbol]) {
-    return res.json({ symbol, price: STATIC_PRICES[symbol] });
-  }
+  // 3) Final static fallback
+  const STATIC_PRICES = { BTC: 107419.98, ETH: 2453.07, SOL: 143.66, XRP: 2.17, TON: 6.34, USDT: 1 };
+  if (STATIC_PRICES[symbol]) return res.json({ symbol, price: STATIC_PRICES[symbol] });
+
   res.status(404).json({ error: "Not found" });
-});
-
-// --- GET /prices/chart/btcusdt (candles for PremiumChart) ---
-router.get("/chart/btcusdt", async (_req, res) => {
-  try {
-    // Binance 15m klines, last ~2 days (192 points)
-    const url =
-      "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=192";
-    const { data } = await axios.get(url, { timeout: 8000 });
-    const candles = data.map((k) => ({
-      time: Math.floor(k[0] / 1000), // open time in seconds
-      open: Number(k[1]),
-      high: Number(k[2]),
-      low: Number(k[3]),
-      close: Number(k[4]),
-    }));
-    res.json({ candles });
-  } catch (err) {
-    res.json({ candles: [] });
-  }
 });
 
 module.exports = router;

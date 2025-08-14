@@ -1,12 +1,33 @@
-// routes/trade.js  — FREE price version (CoinGecko + Binance)
-require('dotenv').config();
+// routes/trade.js — FREE live pricing (CoinGecko + Binance)
+require("dotenv").config();
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
 const pool = require("../db");
-const { authenticateToken } = require("../middleware/auth"); // if you use it elsewhere, keep it
+const { authenticateToken } = require("../middleware/auth"); // keep if used
 
-// ---- Free price helpers ----
+/* -------------------- Helpers -------------------- */
+const ALLOWED_COINS = ["BTC", "ETH", "SOL", "XRP", "TON"];
+
+// Normalize "btc/usdt", "BTCUSDT", "btc-usdt" -> "BTC"
+function normalizeSymbol(input) {
+  if (!input) return "";
+  let s = String(input).trim().toUpperCase().replace(/\s+/g, "");
+  if (s.includes("/")) s = s.split("/")[0];
+  if (s.includes("-")) s = s.split("-")[0];
+  if (s.endsWith("USDT")) s = s.slice(0, -4);
+  if (s.endsWith("USD")) s = s.slice(0, -3);
+  return s;
+}
+
+// "buy"/"sell" -> "BUY"/"SELL"
+function normalizeDirection(input) {
+  const d = String(input || "").trim().toUpperCase();
+  if (d === "BUY" || d === "SELL") return d;
+  if (d === "LONG") return "BUY";
+  if (d === "SHORT") return "SELL";
+  return d.includes("SELL") ? "SELL" : "BUY";
+}
 
 // Symbol -> CoinGecko ID
 const CG_ID = {
@@ -18,11 +39,10 @@ const CG_ID = {
   USDT: "tether",
 };
 
-// get live USD price with CG primary, Binance fallback (no API keys needed)
+// live USD price: CoinGecko primary, Binance fallback
 async function getSpotUSD(symbol) {
   const sym = symbol.toUpperCase();
 
-  // 1) CoinGecko (simple/price)
   try {
     const id = CG_ID[sym];
     if (id) {
@@ -31,31 +51,28 @@ async function getSpotUSD(symbol) {
       const price = Number(data?.[id]?.usd);
       if (price) return price;
     }
-  } catch (_) {}
+  } catch {}
 
-  // 2) Binance ticker as USD proxy via USDT pair
   try {
     const url = `https://api.binance.com/api/v3/ticker/price?symbol=${sym}USDT`;
     const { data } = await axios.get(url, { timeout: 8000 });
     const price = Number(data?.price);
     if (price) return price;
-  } catch (_) {}
+  } catch {}
 
   throw new Error("LIVE_PRICE_UNAVAILABLE");
 }
 
-// Utility: Get per-user trade mode
 async function getUserTradeMode(user_id) {
   const { rows } = await pool.query("SELECT mode FROM user_trade_modes WHERE user_id = $1", [user_id]);
   return (rows[0] && rows[0].mode) || null;
 }
-// Utility: Get global trade mode
 async function getTradeMode() {
   const { rows } = await pool.query("SELECT value FROM settings WHERE key = 'TRADE_MODE'");
   return (rows[0] && rows[0].value) || "AUTO";
 }
 
-// --- Set global trade mode (admin use) ---
+/* -------------------- Admin: set global trade mode -------------------- */
 router.post("/set-trade-mode", async (req, res) => {
   const { mode } = req.body;
   if (!["AUTO", "ALL_WIN", "ALL_LOSE"].includes(mode)) {
@@ -67,30 +84,30 @@ router.post("/set-trade-mode", async (req, res) => {
       [mode]
     );
     res.json({ success: true, mode });
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Failed to update mode" });
   }
 });
 
-// ---- POST /api/trade ----
+/* -------------------- POST /api/trade -------------------- */
 router.post("/", async (req, res) => {
   try {
-    // Accept symbol from frontend, fallback to BTC
     let { user_id, direction, amount, duration, symbol } = req.body;
-    if (!user_id || !direction || !amount || !duration)
+    if (!user_id || !direction || !amount || !duration) {
       return res.status(400).json({ error: "Missing trade data" });
+    }
 
-    // --- Allowed coins ---
-    const ALLOWED_COINS = ["BTC", "ETH", "SOL", "XRP", "TON"];
-    symbol = (symbol || "BTC").toUpperCase();
-    if (!ALLOWED_COINS.includes(symbol))
+    const normSymbol = normalizeSymbol(symbol || "BTC");  // e.g., "BTC"
+    const normDirection = normalizeDirection(direction);  // "BUY"/"SELL"
+
+    if (!ALLOWED_COINS.includes(normSymbol)) {
       return res.status(400).json({ error: "Invalid coin symbol" });
+    }
 
-    // Validate duration and amount
-    const safeDuration = Math.max(5, Math.min(120, Number(duration))); // clamp 5-120
+    const safeDuration = Math.max(5, Math.min(120, Number(duration)));
     const safeAmount = Math.max(1, Number(amount));
 
-    // Check user and USDT balance
+    // Check user and balance
     const userRes = await pool.query("SELECT * FROM users WHERE id = $1", [user_id]);
     const user = userRes.rows[0];
     if (!user) return res.status(404).json({ error: "User not found" });
@@ -100,84 +117,84 @@ router.post("/", async (req, res) => {
       [user_id]
     );
     const usdt = usdtRes.rows[0];
-    if (!usdt || parseFloat(usdt.balance) < safeAmount)
+    if (!usdt || parseFloat(usdt.balance) < safeAmount) {
       return res.status(400).json({ error: "Insufficient USDT" });
-
-    // --- 1. Get current price for selected coin (free live) ---
-    let start_price = 0;
-    try {
-      start_price = await getSpotUSD(symbol);
-    } catch {
-      // final fallback demo prices
-      const fallback = { BTC: 65000, ETH: 3400, SOL: 140, XRP: 0.6, TON: 7.0 };
-      start_price = fallback[symbol] || 1;
     }
 
-    // --- 2. Deduct invest amount immediately ---
+    // 1) Real entry price
+    let start_price = 0;
+    try {
+      start_price = await getSpotUSD(normSymbol);
+    } catch {
+      const fallback = { BTC: 65000, ETH: 3400, SOL: 140, XRP: 0.6, TON: 7.0 };
+      start_price = fallback[normSymbol] || 1;
+    }
+
+    // 2) Deduct stake
     await pool.query(
       "UPDATE user_balances SET balance = balance - $1 WHERE user_id = $2 AND coin = 'USDT'",
       [safeAmount, user_id]
     );
 
-    // --- 3. Save as pending trade ---
+    // 3) Save pending trade
     const timestamp = new Date().toISOString();
     const insertTradeRes = await pool.query(
       `INSERT INTO trades 
         (user_id, symbol, direction, amount, duration, start_price, result, profit, result_price, timestamp)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id`,
-      [user.id, symbol, direction, safeAmount, safeDuration, start_price, "PENDING", 0, null, timestamp]
+      [user.id, normSymbol, normDirection, safeAmount, safeDuration, start_price, "PENDING", 0, null, timestamp]
     );
     const trade_id = insertTradeRes.rows[0].id;
 
-    // --- 4. Simulate trade result after {duration} seconds ---
+    // 4) Finish trade after countdown using REAL end price
     setTimeout(async () => {
       try {
-        // 1. Check per-user and global trade mode
+        // mode
         let mode = await getUserTradeMode(user_id);
         if (!mode) mode = await getTradeMode();
 
-        // 2. Calculate profit percent by duration
+        // payout percent by duration (unchanged)
         const minSec = 5, maxSec = 120, minPct = 5, maxPct = 40;
         let percent = minPct + ((safeDuration - minSec) * (maxPct - minPct) / (maxSec - minSec));
         percent = Math.max(minPct, Math.min(maxPct, percent));
         percent = Math.round(percent * 100) / 100;
 
-        let result, profit;
+        // REAL end price
+        let end_price;
+        try {
+          end_price = await getSpotUSD(normSymbol);
+        } catch {
+          end_price = start_price; // fallback if API fails at end
+        }
+
+        // decide result
+        let result;
         if (mode === "WIN" || mode === "ALL_WIN") {
           result = "WIN";
-          profit = Number((safeAmount * percent / 100).toFixed(2));
         } else if (mode === "LOSE" || mode === "ALL_LOSE") {
           result = "LOSE";
-          profit = -Number((safeAmount * percent / 100).toFixed(2));
         } else {
-          // AUTO: 50/50
-          if (Math.random() < 0.5) {
-            result = "WIN";
-            profit = Number((safeAmount * percent / 100).toFixed(2));
-          } else {
-            result = "LOSE";
-            profit = -Number((safeAmount * percent / 100).toFixed(2));
-          }
+          const wentUp = end_price >= start_price;
+          const buyWins = normDirection === "BUY" && wentUp;
+          const sellWins = normDirection === "SELL" && !wentUp;
+          result = (buyWins || sellWins) ? "WIN" : "LOSE";
         }
 
-        // 3. Generate fake close price (±0.3% for realism, same logic as before)
-        let result_price = start_price;
-        let change = (Math.random() * 0.006 - 0.003) * start_price; // ±0.3%
-        if (result === "WIN") {
-          result_price = direction === "BUY" ? start_price + Math.abs(change) : start_price - Math.abs(change);
-        } else {
-          result_price = direction === "BUY" ? start_price - Math.abs(change) : start_price + Math.abs(change);
-        }
-        result_price = Number(result_price.toFixed(symbol === "XRP" ? 4 : symbol === "TON" ? 4 : 2));
+        // profit by duration %
+        let profit = Number((safeAmount * percent / 100).toFixed(2));
+        if (result === "LOSE") profit = -profit;
 
-        // 4. Update trade record
+        // persist
+        const result_price = Number(
+          end_price.toFixed(normSymbol === "XRP" || normSymbol === "TON" ? 4 : 2)
+        );
         await pool.query(
           `UPDATE trades SET result = $1, profit = $2, result_price = $3 WHERE id = $4`,
           [result, profit, result_price, trade_id]
         );
 
-        // 5. Add back winnings (if win)
+        // credit if win
         if (result === "WIN") {
           await pool.query(
             `UPDATE user_balances SET balance = balance + $1 WHERE user_id = $2 AND coin = 'USDT'`,
@@ -185,7 +202,7 @@ router.post("/", async (req, res) => {
           );
         }
 
-        // 6. Insert into balance_history for user
+        // snapshot
         const { rows: balRows } = await pool.query(
           "SELECT balance FROM user_balances WHERE user_id = $1 AND coin = 'USDT'",
           [user_id]
@@ -205,8 +222,8 @@ router.post("/", async (req, res) => {
       status: "pending",
       trade_id,
       start_price,
-      symbol,
-      direction,
+      symbol: normSymbol,
+      direction: normDirection,
       amount: safeAmount,
       duration: safeDuration,
       message: "Trade started! Wait for countdown..."
@@ -217,7 +234,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-// ---- GET /api/trade/history/:user_id ----
+/* -------------------- History & Admin -------------------- */
 router.get("/history/:user_id", async (req, res) => {
   const { user_id } = req.params;
   try {
@@ -226,12 +243,11 @@ router.get("/history/:user_id", async (req, res) => {
       [user_id]
     );
     res.json(rows);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "DB error" });
   }
 });
 
-// ---- GET /api/admin/trades ----
 router.get("/trades", async (_req, res) => {
   try {
     const { rows } = await pool.query(`
@@ -250,7 +266,7 @@ router.get("/trades", async (_req, res) => {
       ORDER BY t.timestamp DESC
     `);
     res.json(rows);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Failed to fetch trades" });
   }
 });
