@@ -99,43 +99,60 @@ router.get("/", async (_req, res) => {
     res.json({ data, prices });
   } catch {
     // static fallback (very rare)
-    const STATIC_PRICES = { BTC: 107419.98, ETH: 2453.07, SOL: 143.66, XRP: 2.17, TON: 6.34, USDT: 1 };
+    const STATIC_PRICES = { BTC: 107719.98, ETH: 2453.07, SOL: 143.66, XRP: 3, TON: 6.34, USDT: 1 };
     const prices = {};
     SUPPORTED_COINS.forEach((s) => (prices[s] = STATIC_PRICES[s]));
     res.json({ data: [], prices });
   }
 });
 
-/* -------------------- SINGLE -------------------- */
-// --- GET /prices/:symbol (Trade page single price) ---
+/* -------------------- SINGLE (real-time, no stale constants unless allowed) -------------------- */
+// GET /prices/:symbol  -> { symbol, price }
 router.get("/:symbol", async (req, res) => {
   const raw = req.params.symbol;
   const symbol = normalizeSymbol(raw);
+  const allowStatic = process.env.ALLOW_STATIC_FALLBACK === "1"; // opt-in only
 
-  // 1) CoinGecko primary
+  // 1) CoinGecko primary (with TON fallback id)
   try {
-    const id = CG_ID[symbol];
+    let id = CG_ID[symbol];
+    if (!id && symbol === "TON") id = "toncoin"; // some endpoints list TON as "toncoin"
     if (id) {
       const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
-      const { data } = await axios.get(url, { timeout: 8000 });
+      const { data } = await axios.get(url, { timeout: 5000 });
       const price = Number(data?.[id]?.usd);
-      if (price) return res.json({ symbol, price });
+      if (isFinite(price) && price > 0) return res.json({ symbol, price });
     }
   } catch {}
 
   // 2) Binance fallback (USDT proxy for USD)
   try {
     const url = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}USDT`;
-    const { data } = await axios.get(url, { timeout: 8000 });
+    const { data } = await axios.get(url, { timeout: 5000 });
     const price = Number(data?.price);
-    if (price) return res.json({ symbol, price });
+    if (isFinite(price) && price > 0) return res.json({ symbol, price });
   } catch {}
 
-  // 3) Final static fallback
-  const STATIC_PRICES = { BTC: 107419.98, ETH: 2453.07, SOL: 143.66, XRP: 2.17, TON: 6.34, USDT: 1 };
-  if (STATIC_PRICES[symbol]) return res.json({ symbol, price: STATIC_PRICES[symbol] });
+  // 3) Coinbase fallback (USD spot)
+  try {
+    const url = `https://api.coinbase.com/v2/prices/${symbol}-USD/spot`;
+    const { data } = await axios.get(url, {
+      timeout: 5000,
+      headers: { "CB-VERSION": "2023-01-01" },
+    });
+    const price = Number(data?.data?.amount);
+    if (isFinite(price) && price > 0) return res.json({ symbol, price });
+  } catch {}
 
-  res.status(404).json({ error: "Not found" });
+  // 4) Optional static fallback (only if explicitly enabled)
+  if (allowStatic) {
+    const STATIC_PRICES = { BTC: 107419.98, ETH: 2453.07, SOL: 143.66, XRP: 0.6, TON: 7.0, USDT: 1 };
+    if (STATIC_PRICES[symbol]) return res.json({ symbol, price: STATIC_PRICES[symbol] });
+  }
+
+  // If we got here, we couldn't fetch live price—signal that to the client instead of lying
+  return res.status(503).json({ error: "LIVE_PRICE_UNAVAILABLE" });
 });
+
 
 module.exports = router;
