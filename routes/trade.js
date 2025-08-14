@@ -63,6 +63,28 @@ async function getSpotUSD(symbol) {
   throw new Error("LIVE_PRICE_UNAVAILABLE");
 }
 
+// --- Fake result price helpers (tiny, realistic gap) ---
+function _priceDecimals(sym) {
+  return (sym === "XRP" || sym === "TON") ? 4 : 2;
+}
+function _calcGap(startPrice) {
+  // 0.02%–0.08% of price, with a minimum tick so it visibly changes
+  const pct = 0.0002 + Math.random() * 0.0006;
+  const minTick = startPrice < 2 ? 0.0001 : startPrice < 100 ? 0.01 : 0.1;
+  const raw = startPrice * pct;
+  return Math.max(raw, minTick);
+}
+function _fakeResultPrice(startPrice, direction, result, symbol) {
+  const gap = _calcGap(startPrice);
+  let p;
+  if (result === "WIN") {
+    p = direction === "BUY" ? startPrice + gap : startPrice - gap;
+  } else {
+    p = direction === "BUY" ? startPrice - gap : startPrice + gap;
+  }
+  return Number(p.toFixed(_priceDecimals(symbol)));
+}
+
 async function getUserTradeMode(user_id) {
   const { rows } = await pool.query("SELECT mode FROM user_trade_modes WHERE user_id = $1", [user_id]);
   return (rows[0] && rows[0].mode) || null;
@@ -186,8 +208,25 @@ setTimeout(async () => {
     let profit = Number((safeAmount * percent / 100).toFixed(2));
     if (result === "LOSE") profit = -safeAmount;
 
-    // FAKE result price consistent with (direction, result) around the real start price
-    const result_price = _fakeResultPrice(start_price, normDirection, result, normSymbol);
+// --- compute a tiny, realistic fake result price around start_price ---
+const _priceDecimals = (sym) => (sym === "XRP" || sym === "TON") ? 4 : 2;
+const _calcGap = (sp) => {
+  const pct = 0.0002 + Math.random() * 0.0006; // 0.02%–0.08%
+  const minTick = sp < 2 ? 0.0001 : sp < 100 ? 0.01 : 0.1;
+  const raw = sp * pct;
+  return Math.max(raw, minTick);
+};
+const _gap = _calcGap(start_price);
+
+// If WIN: BUY -> higher than start, SELL -> lower than start
+// If LOSS: invert the direction relative to start
+let _rp = start_price;
+if (result === "WIN") {
+  _rp = (normDirection === "BUY") ? start_price + _gap : start_price - _gap;
+} else {
+  _rp = (normDirection === "BUY") ? start_price - _gap : start_price + _gap;
+}
+const result_price = Number(_rp.toFixed(_priceDecimals(normSymbol)));
 
     // persist settlement
     await pool.query(
