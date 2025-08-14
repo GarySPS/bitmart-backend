@@ -97,13 +97,17 @@ router.get("/", async (_req, res) => {
 
     cacheList = { t: now, data, prices };
     res.json({ data, prices });
-  } catch {
-    // static fallback (very rare)
-    const STATIC_PRICES = { BTC: 107719.98, ETH: 2453.07, SOL: 143.66, XRP: 3, TON: 6.34, USDT: 1 };
+} catch {
+  const allowStatic = process.env.ALLOW_STATIC_FALLBACK === "1"; // opt-in only
+  if (allowStatic) {
+    const STATIC_PRICES = { BTC: 107719.98, ETH: 4555.07, SOL: 143.66, XRP: 3, TON: 3.34, USDT: 1 };
     const prices = {};
     SUPPORTED_COINS.forEach((s) => (prices[s] = STATIC_PRICES[s]));
-    res.json({ data: [], prices });
+    return res.json({ data: [], prices, fallback: "static" });
   }
+  // Prefer to be honest if live price fetch fails
+  return res.status(503).json({ data: [], prices: {}, error: "LIVE_PRICE_UNAVAILABLE" });
+}
 });
 
 /* -------------------- SINGLE (real-time, no stale constants unless allowed) -------------------- */
