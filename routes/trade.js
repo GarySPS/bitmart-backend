@@ -147,76 +147,77 @@ router.post("/", async (req, res) => {
     );
     const trade_id = insertTradeRes.rows[0].id;
 
-    // 4) Finish trade after countdown using REAL end price
-    setTimeout(async () => {
-      try {
-        // mode
-        let mode = await getUserTradeMode(user_id);
-        if (!mode) mode = await getTradeMode();
+// 4) Finish trade after countdown using ADMIN/AUTO mode and FAKE result price
+setTimeout(async () => {
+  try {
+    // mode (user override > global)
+    let mode = await getUserTradeMode(user_id);
+    if (!mode) mode = await getTradeMode();
 
-        // payout percent by duration (unchanged)
-        const minSec = 5, maxSec = 120, minPct = 5, maxPct = 40;
-        let percent = minPct + ((safeDuration - minSec) * (maxPct - minPct) / (maxSec - minSec));
-        percent = Math.max(minPct, Math.min(maxPct, percent));
-        percent = Math.round(percent * 100) / 100;
+    // payout percent by duration (unchanged)
+    const minSec = 5, maxSec = 120, minPct = 5, maxPct = 40;
+    let percent = minPct + ((safeDuration - minSec) * (maxPct - minPct) / (maxSec - minSec));
+    percent = Math.max(minPct, Math.min(maxPct, percent));
+    percent = Math.round(percent * 100) / 100;
 
-        // REAL end price
-        let end_price;
-        try {
-          end_price = await getSpotUSD(normSymbol);
-        } catch {
-          end_price = start_price; // fallback if API fails at end
-        }
+    // We may still look at the market to decide AUTO result,
+    // but we will NOT use it for displayed result_price.
+    let end_price_for_decision = start_price;
+    try {
+      end_price_for_decision = await getSpotUSD(normSymbol);
+    } catch {
+      /* ignore – fall back to start_price for decision */
+    }
 
-        // decide result
-        let result;
-        if (mode === "WIN" || mode === "ALL_WIN") {
-          result = "WIN";
-        } else if (mode === "LOSE" || mode === "ALL_LOSE") {
-          result = "LOSE";
-        } else {
-          const wentUp = end_price >= start_price;
-          const buyWins = normDirection === "BUY" && wentUp;
-          const sellWins = normDirection === "SELL" && !wentUp;
-          result = (buyWins || sellWins) ? "WIN" : "LOSE";
-        }
+    // decide result
+    let result;
+    if (mode === "WIN" || mode === "ALL_WIN") {
+      result = "WIN";
+    } else if (mode === "LOSE" || mode === "ALL_LOSE") {
+      result = "LOSE";
+    } else {
+      const wentUp = end_price_for_decision >= start_price;
+      const buyWins = normDirection === "BUY" && wentUp;
+      const sellWins = normDirection === "SELL" && !wentUp;
+      result = (buyWins || sellWins) ? "WIN" : "LOSE";
+    }
 
-        // profit by duration %
-        let profit = Number((safeAmount * percent / 100).toFixed(2));
-        if (result === "LOSE") profit = -profit;
+    // compute profit (binary: win = +amount * percent, loss = -amount)
+    let profit = Number((safeAmount * percent / 100).toFixed(2));
+    if (result === "LOSE") profit = -safeAmount;
 
-        // persist
-        const result_price = Number(
-          end_price.toFixed(normSymbol === "XRP" || normSymbol === "TON" ? 4 : 2)
-        );
-        await pool.query(
-          `UPDATE trades SET result = $1, profit = $2, result_price = $3 WHERE id = $4`,
-          [result, profit, result_price, trade_id]
-        );
+    // FAKE result price consistent with (direction, result) around the real start price
+    const result_price = _fakeResultPrice(start_price, normDirection, result, normSymbol);
 
-        // credit if win
-        if (result === "WIN") {
-          await pool.query(
-            `UPDATE user_balances SET balance = balance + $1 WHERE user_id = $2 AND coin = 'USDT'`,
-            [safeAmount + profit, user_id]
-          );
-        }
+    // persist settlement
+    await pool.query(
+      `UPDATE trades SET result = $1, profit = $2, result_price = $3 WHERE id = $4`,
+      [result, profit, result_price, trade_id]
+    );
 
-        // snapshot
-        const { rows: balRows } = await pool.query(
-          "SELECT balance FROM user_balances WHERE user_id = $1 AND coin = 'USDT'",
-          [user_id]
-        );
-        const newBalance = balRows[0] ? parseFloat(balRows[0].balance) : 0;
-        await pool.query(
-          `INSERT INTO balance_history (user_id, coin, balance, price_usd, timestamp)
-           VALUES ($1, $2, $3, $4, NOW())`,
-          [user_id, "USDT", newBalance, 1]
-        );
-      } catch (err) {
-        console.error("Trade finish error:", err);
-      }
-    }, safeDuration * 1000);
+    // credit if win: return stake + profit (stake was already deducted at entry)
+    if (result === "WIN") {
+      await pool.query(
+        `UPDATE user_balances SET balance = balance + $1 WHERE user_id = $2 AND coin = 'USDT'`,
+        [safeAmount + profit, user_id]
+      );
+    }
+
+    // snapshot
+    const { rows: balRows } = await pool.query(
+      "SELECT balance FROM user_balances WHERE user_id = $1 AND coin = 'USDT'",
+      [user_id]
+    );
+    const newBalance = balRows[0] ? parseFloat(balRows[0].balance) : 0;
+    await pool.query(
+      `INSERT INTO balance_history (user_id, coin, balance, price_usd, timestamp)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [user_id, "USDT", newBalance, 1]
+    );
+  } catch (err) {
+    console.error("Trade finish error:", err);
+  }
+}, safeDuration * 1000);
 
     res.json({
       status: "pending",
