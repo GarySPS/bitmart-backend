@@ -26,6 +26,16 @@ router.post(
       return res.status(400).json({ error: 'Missing required files' });
     }
     try {
+        // Block resubmission while already under review or verified
+     const current = await pool.query(
+       "SELECT kyc_status FROM users WHERE id = $1",
+       [user_id]
+     );
+     const nowStatus = (current.rows?.[0]?.kyc_status || "unverified").toLowerCase();
+     if (nowStatus === "pending" || nowStatus === "approved") {
+       return res.status(409).json({ error: 'Already under automated review' });
+     }
+
       // Unique filenames for KYC files
       const selfieFilename = `${user_id}-selfie-${Date.now()}-${selfieFile.originalname.replace(/\s/g, "_")}`;
       const idCardFilename = `${user_id}-idcard-${Date.now()}-${idCardFile.originalname.replace(/\s/g, "_")}`;
