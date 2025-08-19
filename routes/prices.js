@@ -25,10 +25,15 @@ const CG_ID = {
 function normalizeSymbol(input) {
   if (!input) return "";
   let s = String(input).trim().toUpperCase().replace(/\s+/g, "");
+
+  // split composite pairs like "TON/USDT" or "eth-usd"
   if (s.includes("/")) s = s.split("/")[0];
   if (s.includes("-")) s = s.split("-")[0];
-  if (s.endsWith("USDT")) s = s.slice(0, -4);
-  if (s.endsWith("USD")) s = s.slice(0, -3);
+
+  // only strip the suffix if there's something BEFORE it
+  if (s !== "USDT" && s.endsWith("USDT")) s = s.slice(0, -4);
+  if (s !== "USD"  && s.endsWith("USD"))  s = s.slice(0, -3);
+
   return s;
 }
 
