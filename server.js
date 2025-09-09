@@ -27,11 +27,8 @@ const uploadRoute = require('./routes/upload');
 const app = express();
 
 const allowedOrigins = [
-  'https://novachain-frontend.vercel.app',
+  'https://bitmart-frontend.vercel.app',
   'http://localhost:3000',
-  'https://novachain.pro',
-  'https://www.novachain.pro',
-  'https://novachain-frontend-garys-projects-331bf079.vercel.app'
 ];
 
 app.use(cors({
@@ -81,7 +78,7 @@ app.use('/api/users', userRoutes);
 
 // --------- BASIC ROOT CHECK ---------
 app.get("/", (req, res) => {
-  res.send("NovaChain API is running.");
+  res.send("BitMart API is running.");
 });
 
 // --- Fetch deposit addresses for user deposit modal (public, no auth needed) ---

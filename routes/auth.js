@@ -37,7 +37,7 @@ router.post('/register', async (req, res) => {
         const mailOptions = {
           from: process.env.EMAIL_USER,
           to: email,
-          subject: 'NovaChain OTP Verification',
+          subject: 'BitMart OTP Verification',
           text: `Hello${user.username ? " " + user.username : ""}, your OTP code is: ${otp}`
         };
         transporter.sendMail(mailOptions, (err) => {
@@ -89,7 +89,7 @@ router.post('/register', async (req, res) => {
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
-      subject: 'NovaChain OTP Verification',
+      subject: 'BitMart OTP Verification',
       text: `Hello ${username}, your OTP code is: ${otp}`
     };
     transporter.sendMail(mailOptions, (err) => {
@@ -189,8 +189,8 @@ router.post('/forgot-password', async (req, res) => {
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
-      subject: 'NovaChain Password Reset OTP',
-      text: `Your NovaChain OTP for password reset is: ${otp}`
+      subject: 'BitMart Password Reset OTP',
+      text: `Your BitMart OTP for password reset is: ${otp}`
     };
     transporter.sendMail(mailOptions, (err) => {
       if (err) console.error('❌ OTP email error:', err);
@@ -244,7 +244,7 @@ router.post('/resend-otp', async (req, res) => {
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
-      subject: 'NovaChain OTP Verification',
+      subject: 'BitMart OTP Verification',
       text: `Hello${user.username ? " " + user.username : ""}, your OTP code is: ${otp}`
     };
     transporter.sendMail(mailOptions, (err) => {
