@@ -22,59 +22,55 @@ router.post('/register', async (req, res) => {
   if (!username || !email || !password) {
     return res.status(400).json({ error: 'Missing username, email or password' });
   }
+
   try {
-    // Check duplicate email
+    // Check for existing, unverified user
     const { rows: existing } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     if (existing.length > 0) {
       const user = existing[0];
-      if (!user.verified) {
-
-        // User exists but not verified: re-send OTP and inform user
+      if (user.verified) {
+        return res.status(409).json({ error: 'This email is already registered. Please log in.' });
+      } else {
+        // User exists but not verified: re-send OTP
         const otp = crypto.randomInt(100000, 999999).toString();
         await pool.query('UPDATE users SET otp = $1 WHERE email = $2', [otp, email]);
         
-        // Re-send OTP
         const mailOptions = {
-          from: process.env.EMAIL_USER,
+          from: `"BitMart" <${process.env.EMAIL_USER}>`,
           to: email,
           subject: 'BitMart OTP Verification',
-          text: `Hello${user.username ? " " + user.username : ""}, your OTP code is: ${otp}`
+          text: `Hello ${user.username || ''}, your new OTP code is: ${otp}`
         };
-        transporter.sendMail(mailOptions, (err) => {
-          if (err) console.error('❌ OTP email error:', err);
-        });
+        await transporter.sendMail(mailOptions);
+        console.log(`✅ New OTP sent for unverified user: ${email}`);
         return res.status(200).json({ 
           message: 'Account already exists but not verified. New OTP sent. Please check your email.' 
         });
-      } else {
-        // Already registered & verified
-        return res.status(409).json({ error: 'This email is already registered. Please log in.' });
       }
     }
 
-    // If here, email does not exist: create user
-    const plainPassword = password; // <-- No bcrypt hash
+    // --- If we are here, it's a completely new user ---
+    
+    // Create new user details
     const otp = crypto.randomInt(100000, 999999).toString();
-
-    // Generate random unique ID (max 10 attempts)
+    
     let userId;
     let retries = 0;
     while (retries < 10) {
-      userId = crypto.randomInt(1, 1000000); // 1..999999
+      userId = crypto.randomInt(1, 1000000);
       const idCheck = await pool.query('SELECT 1 FROM users WHERE id = $1', [userId]);
-      if (idCheck.rows.length === 0) break; // Unique
+      if (idCheck.rows.length === 0) break;
       retries++;
     }
-    if (retries === 10) return res.status(500).json({ error: "Could not assign unique user ID. Please try again." });
+    if (retries === 10) return res.status(500).json({ error: "Could not assign unique user ID." });
 
-    // Insert user with custom random ID
-   await pool.query(
-  'INSERT INTO users (id, username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-  [userId, username, email, password, 0, otp, false]
-);
+    // Insert user into DB
+    await pool.query(
+      'INSERT INTO users (id, username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      [userId, username, email, password, 0, otp, false]
+    );
 
-
-    // Insert balances for all coins (multi-coin support)
+    // Insert balances for all coins
     const coins = ["USDT", "BTC", "ETH", "SOL", "XRP", "TON"];
     await Promise.all(
       coins.map((coin) => 
@@ -85,25 +81,27 @@ router.post('/register', async (req, res) => {
       )
     );
 
-    // Send OTP Email
+    // Prepare the email
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: `"BitMart" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: 'BitMart OTP Verification',
       text: `Hello ${username}, your OTP code is: ${otp}`
     };
-    transporter.sendMail(mailOptions, (err) => {
-      if (err) console.error('❌ OTP email error:', err);
-    });
 
+    // Use AWAIT to send the email and wait for the result
+    await transporter.sendMail(mailOptions);
+    console.log(`✅ OTP Email sent successfully to new user: ${email}`);
+    
+    // Only respond with success AFTER the email has been sent
     res.status(201).json({ message: 'User registered! OTP sent.', userId });
+
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    // If ANY of the above steps fail (DB insert or email send), this will run
+    console.error("❌ Registration or Email sending failed:", err);
+    res.status(500).json({ error: "Failed to register or send verification email. Please check server logs." });
   }
 });
-
-
-
 
 // Login (returns JWT, supports email or username)
 router.post('/login', async (req, res) => {
