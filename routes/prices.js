@@ -85,6 +85,8 @@ router.get("/", async (_req, res) => {
       id: c.id,
       name: c.name,
       symbol: (c.symbol || "").toUpperCase(),
+      high_24h: Number(c.high_24h ?? 0),
+      low_24h: Number(c.low_24h ?? 0),    
       quote: {
         USD: {
           price: Number(c.current_price),
