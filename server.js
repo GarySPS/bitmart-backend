@@ -31,6 +31,7 @@ const app = express();
 
 const allowedOrigins = [
   'https://bitmart-frontend.vercel.app',
+  'https://bitmartadmin-frontend.vercel.app',
   'http://localhost:3000',
 ];
 
@@ -38,7 +39,9 @@ app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps, curl, Postman)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) !== -1) {
+    
+    // Allow all vercel.app subdomains and the specific allowed origins
+    if (allowedOrigins.indexOf(origin) !== -1 || origin.endsWith('.vercel.app')) {
       return callback(null, true);
     } else {
       return callback(new Error('Not allowed by CORS'));
