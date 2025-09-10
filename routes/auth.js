@@ -18,6 +18,10 @@ const transporter = nodemailer.createTransport({
 
 // Register (random unique ID version, with resend OTP for unverified)
 router.post('/register', async (req, res) => {
+  // --- TEMPORARY DEBUGGING LINE ---
+  return res.status(500).json({ 
+    error: `DEBUG: The DATABASE_URL is: [${process.env.DATABASE_URL}]` 
+  });
   const { username, email, password } = req.body;
   if (!username || !email || !password) {
     return res.status(400).json({ error: 'Missing username, email or password' });
