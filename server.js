@@ -1,4 +1,7 @@
-require('dotenv').config();
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
+console.log("DATABASE_URL Loaded:", process.env.DATABASE_URL);
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
