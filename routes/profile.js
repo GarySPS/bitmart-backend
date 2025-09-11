@@ -25,47 +25,49 @@ const upload = multer({
   }
 });
 
-
 // -------- GET /api/profile (JWT-protected) --------
 router.get('/', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(
-      "SELECT id, username, email, avatar, referral FROM users WHERE id = $1",
-      [req.user.id]
-    );
-    const row = result.rows[0];
-    if (!row) return res.status(404).json({ error: "User not found" });
+  try {
+    const result = await pool.query(
+      "SELECT id, username, email, avatar, referral FROM users WHERE id = $1",
+      [req.user.id]
+    );
+    const row = result.rows[0];
+    if (!row) return res.status(404).json({ error: "User not found" });
 
-    const balanceRes = await pool.query(
-      "SELECT SUM(balance) as total_usd FROM user_balances WHERE user_id = $1",
-      [req.user.id]
-    );
-    const total_usd = Number(balanceRes.rows[0].total_usd) || 0;
+    const balanceRes = await pool.query(
+      "SELECT SUM(balance) as total_usd FROM user_balances WHERE user_id = $1",
+      [req.user.id]
+    );
+    const total_usd = Number(balanceRes.rows[0].total_usd) || 0;
 
-    let avatarUrl = "/logo192_new.png";
-    if (row.avatar && typeof row.avatar === "string" && row.avatar.length > 0) {
-      // Always serve public URL directly
-      avatarUrl = row.avatar.startsWith("http")
-        ? row.avatar
-        : `https://zgnefojwdijycgcqngke.supabase.co/storage/v1/object/public/avatar/${row.avatar}?t=${Date.now()}`;
-    }
+    let avatarUrl = "/logo192_new.png"; // Default avatar
+    if (row.avatar && typeof row.avatar === "string" && row.avatar.length > 0) {
+      // If the stored value is already a full URL, use it directly.
+      if (row.avatar.startsWith("http")) {
+        avatarUrl = row.avatar;
+      } else {
+        // Otherwise, construct the public URL from the filename and your environment variable.
+        const { data } = supabase.storage.from('avatar').getPublicUrl(row.avatar);
+        avatarUrl = data.publicUrl;
+      }
+    }
 
-    res.json({
-      user: {
-        id: "NC-" + String(row.id).padStart(7, "0"),
-        username: row.username,
-        email: row.email,
-        balance: total_usd,
-        avatar: avatarUrl,   // <--- always a full URL or default!
-        referral: row.referral || ""
-      }
-    });
-  } catch (err) {
-    console.error("❌ /api/profile error:", err);
-    res.status(500).json({ error: "Database error" });
-  }
+    res.json({
+      user: {
+        id: "NC-" + String(row.id).padStart(7, "0"),
+        username: row.username,
+        email: row.email,
+        balance: total_usd,
+        avatar: avatarUrl, // This will now be the correct URL
+        referral: row.referral || ""
+      }
+    });
+  } catch (err) {
+    console.error("❌ /api/profile error:", err);
+    res.status(500).json({ error: "Database error" });
+  }
 });
-
 
 // -------- POST /api/profile/avatar --------
 // 1. Handle JSON Supabase-style avatar update
