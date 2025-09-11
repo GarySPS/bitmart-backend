@@ -9,20 +9,24 @@ router.post(
   authenticateToken,
   async (req, res) => {
     const user_id = req.user.id;
-    const { coin, amount, address, screenshot } = req.body; // <-- screenshot is now a public URL string
+    // 1. Get 'network' from the request body
+    const { coin, amount, address, screenshot, network } = req.body;
 
-    if (!user_id || !coin || !amount || !address || !screenshot) {
+    // 2. Update validation to include network
+    if (!user_id || !coin || !amount || !address || !screenshot || !network) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
     try {
-      // Insert with 'pending' status!
+      // 3. Update the SQL query to include the 'network' column
       const result = await pool.query(
-        `INSERT INTO deposits (user_id, coin, amount, address, screenshot, status)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-        [user_id, coin, amount, address, screenshot, 'pending']
+        `INSERT INTO deposits (user_id, coin, amount, address, screenshot, status, network)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+        // 4. Add the network variable to the query parameters
+        [user_id, coin, amount, address, screenshot, 'pending', network]
       );
       res.json({ success: true, id: result.rows[0].id });
     } catch (err) {
+      console.error("Create deposit error:", err);
       res.status(500).json({ error: 'Database error' });
     }
   }
