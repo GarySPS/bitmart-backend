@@ -91,14 +91,14 @@ app.get("/", (req, res) => {
 
 // --- Fetch deposit addresses for user deposit modal (public, no auth needed) ---
 app.get('/api/deposit-addresses', async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT coin, address, qr_url FROM deposit_addresses`
-    );
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ message: "Failed to fetch deposit addresses" });
-  }
+  try {
+    const result = await pool.query(
+      `SELECT coin, network, address, qr_url FROM deposit_addresses`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch deposit addresses" });
+  }
 });
 
 // --- ADMIN: Fetch ALL trades for admin backend ---
