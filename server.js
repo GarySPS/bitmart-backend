@@ -30,9 +30,11 @@ const uploadRoute = require('./routes/upload');
 const app = express();
 
 const allowedOrigins = [
-  'https://bitmart-frontend.vercel.app',
-  'https://bitmartadmin-frontend.vercel.app',
-  'http://localhost:3000',
+  'https://bitmart-frontend.vercel.app',
+  'https://bitmartadmin-frontend.vercel.app',
+  'http://localhost:3000',
+  'https://bitmart.top',
+  'https://www.bitmart.top',
 ];
 
 app.use(cors({
