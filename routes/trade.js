@@ -147,7 +147,14 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "Invalid coin symbol" });
     }
 
-    const safeDuration = Math.max(5, Math.min(120, Number(duration)));
+    // Enforce only allowed durations
+const allowedDurations = [30, 60, 90, 120];
+const safeDuration = Number(duration);
+
+if (!allowedDurations.includes(safeDuration)) {
+  return res.status(400).json({ error: "Invalid duration" });
+}
+
     const safeAmount = Math.max(1, Number(amount));
 
     // Check user and balance
@@ -212,14 +219,15 @@ setTimeout(async () => {
     let mode = await getUserTradeMode(user_id);
     if (!mode) mode = await getTradeMode();
 
-    // payout percent fixed mapping (match frontend UI)
-    const payoutMap = {
-      15: 30,
-      30: 50,
-      60: 70,
-      120: 100,
-    };
-    let percent = payoutMap[safeDuration] || 30; // default fallback 30%
+// payout percent fixed mapping (new durations)
+const payoutMap = {
+  30: 30,
+  60: 50,
+  90: 70,
+  120: 100,
+};
+let percent = payoutMap[safeDuration] || 30; // default fallback 30%
+
 
     // We may still look at the market to decide AUTO result,
     // but we will NOT use it for displayed result_price.
