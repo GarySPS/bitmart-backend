@@ -212,11 +212,14 @@ setTimeout(async () => {
     let mode = await getUserTradeMode(user_id);
     if (!mode) mode = await getTradeMode();
 
-    // payout percent by duration (unchanged)
-    const minSec = 5, maxSec = 120, minPct = 5, maxPct = 40;
-    let percent = minPct + ((safeDuration - minSec) * (maxPct - minPct) / (maxSec - minSec));
-    percent = Math.max(minPct, Math.min(maxPct, percent));
-    percent = Math.round(percent * 100) / 100;
+    // payout percent fixed mapping (match frontend UI)
+    const payoutMap = {
+      15: 30,
+      30: 50,
+      60: 70,
+      120: 100,
+    };
+    let percent = payoutMap[safeDuration] || 30; // default fallback 30%
 
     // We may still look at the market to decide AUTO result,
     // but we will NOT use it for displayed result_price.
