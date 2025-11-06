@@ -11,33 +11,38 @@ const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN || 'yourSecureAdminTokenHere
 
 // --- User requests withdrawal (status = pending) ---
 router.post('/', authenticateToken, async (req, res) => {
-  const user_id = req.user.id;
-  const { coin, amount, address } = req.body;
-  if (!user_id || !coin || !amount || !address) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
+  const user_id = req.user.id;
+  // 1. Get 'network' from the request body
+  const { coin, amount, address, network } = req.body;
 
-  try {
-    const { rows } = await pool.query(
-      'SELECT balance FROM user_balances WHERE user_id = $1 AND coin = $2',
-      [user_id, coin]
-    );
-    const userBal = rows[0];
-    if (!userBal) return res.status(400).json({ error: "Balance record not found" });
-    if (parseFloat(userBal.balance) < parseFloat(amount)) {
-      return res.status(400).json({ error: "Insufficient balance" });
-    }
+  // 2. Update validation to include network
+  if (!user_id || !coin || !amount || !address || !network) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
 
-    const result = await pool.query(
-      `INSERT INTO withdrawals (user_id, coin, amount, address, status)
-       VALUES ($1, $2, $3, $4, 'pending')
-       RETURNING id`,
-      [user_id, coin, amount, address]
-    );
-    res.json({ success: true, id: result.rows[0].id });
-  } catch (err) {
-    res.status(500).json({ error: 'Database error' });
-  }
+  try {
+    const { rows } = await pool.query(
+      'SELECT balance FROM user_balances WHERE user_id = $1 AND coin = $2',
+      [user_id, coin]
+    );
+    const userBal = rows[0];
+    if (!userBal) return res.status(400).json({ error: "Balance record not found" });
+    if (parseFloat(userBal.balance) < parseFloat(amount)) {
+      return res.status(400).json({ error: "Insufficient balance" });
+    }
+
+    // 3. Update the SQL query to include the 'network' column
+    const result = await pool.query(
+      `INSERT INTO withdrawals (user_id, coin, amount, address, status, network)
+       VALUES ($1, $2, $3, $4, 'pending', $5)
+       RETURNING id`,
+      // 4. Add the network variable to the query parameters
+      [user_id, coin, amount, address, network]
+    );
+    res.json({ success: true, id: result.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // --- Get withdrawals (user: only own; admin: all) ---
